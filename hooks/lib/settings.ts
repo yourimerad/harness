@@ -1,14 +1,16 @@
 // Édition de fichiers JSON de réglages (settings.json) par chemin de clés. Pur : aucune API Node ni DOM.
 //
-// Principe : on lit le JSON, on modifie l'arbre en mémoire, on réécrit tout avec une indentation de 2 espaces.
+// Principe : on lit le JSON, on modifie l'arbre en mémoire, on réécrit tout avec l'indentation de l'entrée.
 // Ce que la relecture garde ou normalise :
 // - ordre des clés : conservé (remplacer une clé la laisse à sa place, en ajouter une la met à la fin) ;
 //   limite de JS : les clés « entières » ("1", "2"…) passent en tête, par ordre croissant ;
 // - fin de fichier : un saut de ligne final si et seulement si l'entrée en avait un
 //   (l'espace blanc en fin d'entrée est sinon écarté) ;
 // - BOM UTF-8 en tête et fins de ligne CRLF : conservés ;
-// - indentation : toujours 2 espaces ; formatage compact des tableaux, nombres écrits autrement
-//   (`1.0`, `1e3`), échappements `\uXXXX`, clés dupliquées : normalisés par la réécriture.
+// - indentation : celle de la première ligne indentée de l'entrée (une tabulation, ou N espaces), 2 espaces si
+//   l'entrée n'a aucune ligne indentée (JSON compact) ;
+// - formatage compact des tableaux, nombres écrits autrement (`1.0`, `1e3`), échappements `\uXXXX`, clés dupliquées :
+//   normalisés par la réécriture.
 //
 // Chemins (`keyPath`) : un segment `string` désigne une clé d'objet, un segment `number` un index de tableau.
 // Les deux ne se mélangent pas : un nombre ne vise jamais une clé d'objet (`{"0": 1}` ne répond pas à `[0]`)
@@ -25,14 +27,18 @@ export type KeyPath = (string | number)[]
 
 type Doc = {
   root: unknown
-  /** `'﻿'` si l'entrée commençait par un BOM, sinon `''`. */
+  /** `'\uFEFF'` si l'entrée commençait par un BOM, sinon `''`. */
   bom: string
   eol: '\n' | '\r\n'
+  /** Unité d'indentation de l'entrée : `'\t'` ou N espaces (2 par défaut), telle que `JSON.stringify` l'attend. */
+  indent: string
   /** L'entrée finissait par un saut de ligne (suivi au plus d'espaces). */
   finalNewline: boolean
 }
 
 type Lookup = { found: true; value: unknown } | { found: false }
+
+const DEFAULT_INDENT = '  '
 
 const hasOwn = (o: object, key: string): boolean => Object.prototype.hasOwnProperty.call(o, key)
 
@@ -43,16 +49,27 @@ function define(o: Record<string, unknown>, key: string, value: unknown): void {
   Object.defineProperty(o, key, { value, writable: true, enumerable: true, configurable: true })
 }
 
+/**
+ * Indentation de la première ligne indentée : une tabulation, ou N espaces ; 2 espaces si aucune ligne n'est indentée.
+ * Un JSON strict n'a pas de saut de ligne brut dans une chaîne : le début de ligne est toujours de la mise en forme.
+ */
+function detectIndent(body: string): string {
+  const lead = /^([ \t]+)\S/m.exec(body)?.[1]
+  if (lead === undefined) return DEFAULT_INDENT
+  return lead.startsWith('\t') ? '\t' : ' '.repeat(/^ */.exec(lead)?.[0].length ?? 0)
+}
+
 function parseDoc(json: string): Doc {
-  const bom = json.startsWith('﻿') ? '﻿' : ''
+  const bom = json.startsWith('\uFEFF') ? '\uFEFF' : ''
   const body = json.slice(bom.length)
   const finalNewline = body.slice(body.trimEnd().length).includes('\n')
   const eol = /\r?\n/.exec(body)?.[0] === '\r\n' ? '\r\n' : '\n'
-  return { root: JSON.parse(body.trim()), bom, eol, finalNewline }
+  const text = body.trim()
+  return { root: JSON.parse(text), bom, eol, finalNewline, indent: detectIndent(text) }
 }
 
 function serialize(doc: Doc): string {
-  const text = JSON.stringify(doc.root, null, 2)
+  const text = JSON.stringify(doc.root, null, doc.indent)
   // Les sauts de ligne bruts ne viennent que de la mise en forme : ceux des chaînes sont échappés (`\n`).
   const body = doc.eol === '\r\n' ? text.replace(/\n/g, '\r\n') : text
   return doc.bom + body + (doc.finalNewline ? doc.eol : '')

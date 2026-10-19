@@ -1,5 +1,5 @@
 import { test, expect, describe } from 'claude-code/testing'
-import { memoryDirFor, sectionSource, toolProvider } from '../hooks/lib/classify'
+import { bareName, memoryDirFor, sectionSource, toolProvider } from '../hooks/lib/classify'
 
 describe('memoryDirFor', () => {
   test('exemple du contrat : chaque caractère hors [A-Za-z0-9] devient « - »', () => {
@@ -34,6 +34,89 @@ describe('memoryDirFor', () => {
 
   test('le cwd est assaini tel quel, un « / » final devient un « - » final', () => {
     expect(memoryDirFor('/h', '/p/')).toBe('/h/.claude/projects/-p-/memory')
+  })
+})
+
+describe('memoryDirFor : troncature des longs chemins (comme le moteur)', () => {
+  /** Même formule que le moteur, écrite ici en ligne (String.hashCode de Java sur les unités UTF-16). */
+  const expectedDir = (home: string, cwd: string): string => {
+    const sanitized = cwd.replace(/[^a-zA-Z0-9]/g, '-')
+    let name = sanitized
+    if (sanitized.length > 200) {
+      let h = 0
+      for (let i = 0; i < cwd.length; i++) h = ((h << 5) - h + cwd.charCodeAt(i)) | 0
+      name = `${sanitized.slice(0, 200)}-${Math.abs(h).toString(36)}`
+    }
+    return `${home}/.claude/projects/${name}/memory`
+  }
+
+  test('exactement 200 caractères assainis : pas de troncature, pas de suffixe', () => {
+    const cwd = '/' + 'a'.repeat(199) // « - » + 199 « a » = 200
+    expect(memoryDirFor('/h', cwd)).toBe(`/h/.claude/projects/-${'a'.repeat(199)}/memory`)
+  })
+
+  test('201 caractères assainis : 200 premiers, puis « - » et le hash Java en base 36', () => {
+    const cwd = '/' + 'a'.repeat(200) // 201 caractères
+    const dir = memoryDirFor('/h', cwd)
+    expect(dir).toBe(`/h/.claude/projects/-${'a'.repeat(199)}-b6ymvl/memory`) // suffixe figé en dur
+    expect(dir).toBe(expectedDir('/h', cwd)) // et recalculé avec la formule du moteur
+  })
+
+  test('suffixe figé pour un chemin long réaliste (300 caractères)', () => {
+    const cwd = '/Users/youri/' + 'projets-longs/'.repeat(20) + 'harness'
+    expect(cwd.length).toBe(300)
+    const sanitized = cwd.replace(/[^a-zA-Z0-9]/g, '-')
+    expect(memoryDirFor('/Users/youri', cwd)).toBe(`/Users/youri/.claude/projects/${sanitized.slice(0, 200)}-9lwgnr/memory`)
+    expect(memoryDirFor('/Users/youri', cwd)).toBe(expectedDir('/Users/youri', cwd))
+  })
+
+  test('le hash porte sur le chemin d’origine : deux chemins qui s’assainissent pareil restent distincts', () => {
+    const a = '/' + 'a.'.repeat(150)
+    const b = '/' + 'a_'.repeat(150)
+    expect(a.replace(/[^a-zA-Z0-9]/g, '-')).toBe(b.replace(/[^a-zA-Z0-9]/g, '-'))
+    expect(memoryDirFor('/h', a)).not.toBe(memoryDirFor('/h', b))
+    expect(memoryDirFor('/h', a)).toBe(expectedDir('/h', a))
+    expect(memoryDirFor('/h', b)).toBe(expectedDir('/h', b))
+  })
+
+  test('hash négatif : valeur absolue (le suffixe ne contient pas de « - » en plus)', () => {
+    const cwd = '/' + 'a'.repeat(200) // hash Java -676821585
+    const suffix = memoryDirFor('/h', cwd).split('-').pop() as string
+    expect(suffix).toBe('b6ymvl/memory')
+  })
+
+  test('caractères non ASCII : le hash porte sur les unités UTF-16 du chemin d’origine', () => {
+    const cwd = '/' + 'é😀'.repeat(120) // 361 unités UTF-16, hash Java 541367087
+    expect(memoryDirFor('/h', cwd)).toBe(`/h/.claude/projects/${'-'.repeat(200)}-8ybdin/memory`)
+    expect(memoryDirFor('/h', cwd)).toBe(expectedDir('/h', cwd))
+  })
+
+  test('un chemin de 109 caractères n’est pas suffixé', () => {
+    const cwd = '/Users/y/' + 'x'.repeat(100)
+    expect(memoryDirFor('/h', cwd)).toBe(`/h/.claude/projects/-Users-y-${'x'.repeat(100)}/memory`)
+  })
+})
+
+describe('bareName', () => {
+  test('coupe au premier « @ » : la marketplace est retirée', () => {
+    expect(bareName('hcc@local')).toBe('hcc')
+    expect(bareName('searchfit-seo@searchfit')).toBe('searchfit-seo')
+    expect(bareName('a@b@c')).toBe('a')
+  })
+
+  test('une clé sans « @ » est rendue telle quelle', () => {
+    expect(bareName('hcc')).toBe('hcc')
+    expect(bareName('')).toBe('')
+  })
+
+  test('une clé qui commence par « @ » donne une chaîne vide', () => {
+    expect(bareName('@local')).toBe('')
+  })
+
+  test('avec sectionSource : la clé de enabledPlugins ne correspond qu’une fois passée par bareName', () => {
+    const keys = ['hcc@local', 'small-business@claude-plugins']
+    expect(sectionSource('hcc:policy', new Set(keys))).toEqual({ kind: 'builtin', plugin: 'hcc' }) // clé brute : ne trouve rien
+    expect(sectionSource('hcc:policy', new Set(keys.map(bareName)))).toEqual({ kind: 'plugin', name: 'hcc' })
   })
 })
 

@@ -21,6 +21,13 @@ describe('estimateTokens', () => {
     expect(estimateTokens('\n\n\n\n\n\n\n')).toBe(2)
     expect(estimateTokens('é'.repeat(7))).toBe(2)
   })
+
+  test('un caractère astral (emoji) compte pour 2 unités UTF-16, pas 1', () => {
+    expect('😀'.length).toBe(2)
+    expect(estimateTokens('😀'.repeat(7))).toBe(4) // 14 unités / 3,5 (7 points de code donneraient 2)
+    expect(estimateTokens('😀'.repeat(4))).toBe(3) // 8 unités / 3,5 = 2,28 → 3 (4 points de code donneraient 2)
+    expect(estimateTokens('a😀')).toBe(estimateTokens('abc'))
+  })
 })
 
 describe('formatTokens', () => {
@@ -58,6 +65,42 @@ describe('formatTokens', () => {
     expect(formatTokens(999.6)).toBe('≈ 1,0 k')
     expect(formatTokens(9950)).toBe('≈ 10 k')
     expect(formatTokens(9999)).toBe('≈ 10 k')
+  })
+
+  test('dès 999 500, l’arrondi en milliers fabriquerait « 1000 k » : on passe aux millions', () => {
+    expect(formatTokens(999_499)).toBe('≈ 999 k')
+    expect(formatTokens(999_500)).toBe('≈ 1,0 M')
+    expect(formatTokens(999_999)).toBe('≈ 1,0 M')
+  })
+
+  test('de 1 000 000 à 9 949 999 : « M », une décimale et virgule française', () => {
+    expect(formatTokens(1_000_000)).toBe('≈ 1,0 M')
+    expect(formatTokens(1_200_000)).toBe('≈ 1,2 M')
+    expect(formatTokens(1_234_567)).toBe('≈ 1,2 M')
+    expect(formatTokens(1_250_000)).toBe('≈ 1,3 M')
+    expect(formatTokens(5_678_901)).toBe('≈ 5,7 M')
+    expect(formatTokens(9_949_999)).toBe('≈ 9,9 M')
+    for (const n of [1_000_000, 1_500_000, 2_345_678, 9_900_000]) expect(formatTokens(n)).toMatch(/^≈ \d,\d M$/)
+  })
+
+  test('dès 10 000 000 : « M » sans décimale', () => {
+    expect(formatTokens(9_950_000)).toBe('≈ 10 M') // l’arrondi ne fabrique pas « 10,0 M »
+    expect(formatTokens(10_000_000)).toBe('≈ 10 M')
+    expect(formatTokens(12_345_678)).toBe('≈ 12 M')
+    expect(formatTokens(12_500_000)).toBe('≈ 13 M')
+    expect(formatTokens(250_000_000)).toBe('≈ 250 M')
+    expect(formatTokens(999_499_999)).toBe('≈ 999 M')
+  })
+
+  test('plafonné à « ≈ 999 M » : jamais de notation exponentielle', () => {
+    expect(formatTokens(999_500_000)).toBe('≈ 999 M')
+    expect(formatTokens(1_000_000_000)).toBe('≈ 999 M')
+    expect(formatTokens(1e21)).toBe('≈ 999 M')
+    expect(formatTokens(Number.MAX_VALUE)).toBe('≈ 999 M')
+    for (const n of [1e9, 1e15, 1e21, 1e100, Number.MAX_VALUE, Number.MAX_SAFE_INTEGER]) {
+      expect(formatTokens(n)).toMatch(/^≈ \d{1,3} M$/)
+      expect(formatTokens(n)).not.toMatch(/e/i)
+    }
   })
 
   test('une valeur fractionnaire est arrondie', () => {
