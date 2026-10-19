@@ -84,6 +84,29 @@ const loose = (text: string) =>
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
+/** Un serveur MCP tel que les noms d'outils l'épellent (`plugin:x:gmail` → `plugin_x_gmail`, `claude.ai Gmail` → `claude_ai_Gmail`). */
+export const mcpKey = (server: string) => server.replace(/[^A-Za-z0-9_-]/g, '_')
+
+/** Un texte reçu par le modèle : section du system prompt, bloc du premier message ou reminder. */
+type Carried = { key: string; text: string; via: string; badge: string }
+
+/**
+ * La tranche d'un texte qui commence à la ligne de titre `# …` reconnue par `start` et s'arrête au prochain
+ * titre de niveau 1 (ou à la fin) ; `keep` prolonge sur un titre voisin du même sujet. `rest` = le texte sans la tranche.
+ * Null quand aucune ligne ne commence la tranche.
+ */
+export const sliceHeading = (text: string, start: RegExp, keep?: RegExp): { slice: string; rest: string } | null => {
+  const lines = text.split('\n')
+  const from = lines.findIndex(l => start.test(l))
+  if (from < 0) return null
+  let to = from + 1
+  while (to < lines.length && !(/^# /.test(lines[to]!) && !keep?.test(lines[to]!)) && !LISTING_OPENER.test(lines[to]!)) to++
+  return { slice: lines.slice(from, to).join('\n').trim(), rest: [...lines.slice(0, from), ...lines.slice(to)].join('\n') }
+}
+
+/** Les paragraphes sans titre par lesquels le moteur ouvre une liste (outils différés, agents, skills, date) : ils bornent une tranche. */
+const LISTING_OPENER = /^(The following (deferred tools|skills are available|MCP servers (require|are still))|Available agent types|Today's date|While auto mode|Claude cannot start the OAuth)/
+
 const leaf = (partial: Omit<Item, 'tokens'> & { tokens?: number }): Item => ({
   tokens: partial.tokens ?? estimateTokens(partial.text),
   ...partial,
@@ -260,42 +283,62 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
   const userPlugins = new Set(plugins.map(p => p.name))
   const userSettingsPath = `${env.home}/.claude/settings.json`
 
-  // --- sections du system prompt
+  // --- sections du system prompt, blocs du premier message, reminders : les mêmes marqueurs partout.
+  // Sous le preset SDK (app de bureau), le cadre mémoire, le style de sortie et les instructions MCP ne sont
+  // pas toujours des sections : ils voyagent dans le premier message (`prompt.context`) ou en reminder
+  // (`prompt.attachment`), parfois plusieurs sujets dans un même texte. On découpe au titre de niveau 1.
   const engine: Item[] = []
   const app: Item[] = []
   const pluginSections = new Map<string, Item[]>()
   let memoryText: string | null = null
-  let mcpText: string | null = null
+  const mcpTexts: Array<{ text: string; via: string }> = []
   const settingsDriven: Item[] = []
-  for (const s of snap?.sections ?? []) {
-    const src = sectionSource(s.id, userPlugins)
-    if (s.id === 'memory' || /^# Memory\b/m.test(s.text)) {
-      memoryText = s.text
+  const carried: Carried[] = [
+    ...(snap?.sections ?? []).map(s => ({ key: s.id, text: s.text, via: `section ${s.id}`, badge: s.scope })),
+    ...(snap?.blocks ?? []).filter(b => b.name !== 'claudeMd').map(b => ({ key: `block:${b.name}`, text: b.text, via: `bloc ${b.name}`, badge: 'prompt.context' })),
+    ...(snap?.attachments ?? []).map(a => ({ key: `attachment:${a.type}`, text: a.text, via: `reminder ${a.type}`, badge: 'prompt.attachment' })),
+  ]
+  for (const c of carried) {
+    let rest = c.text
+    if (memoryText === null) {
+      const cut = c.key === 'memory' ? { slice: rest, rest: '' } : sliceHeading(rest, /^# Memory\b/)
+      if (cut) {
+        memoryText = cut.slice
+        rest = cut.rest
+      }
+    }
+    const mcpCut = sliceHeading(rest, /^# MCP Server Instructions/)
+    if (mcpCut) {
+      mcpTexts.push({ text: mcpCut.slice, via: c.via })
+      rest = mcpCut.rest
+    }
+    const styleCut = sliceHeading(rest, /^# Output Style: /, /^# .*Style Active\b/)
+    if (styleCut) {
+      rest = styleCut.rest
+      const name = styleCut.slice.match(/^# Output Style: (.+)$/m)?.[1]?.trim() ?? snap?.outputStyle ?? '?'
+      if (!settingsDriven.length) {
+        settingsDriven.push(leaf({
+          id: `settings/section/${c.key}`, group: 'settings', title: `Output style « ${name} » (${c.via})`, text: styleCut.slice,
+          vanilla: false, source: { kind: 'settings', path: userSettingsPath, keyPath: ['outputStyle'] },
+          disable: { kind: 'remove-key', path: userSettingsPath, keyPath: ['outputStyle'] },
+          badges: ['settings.outputStyle', c.badge],
+        }))
+      }
+    }
+    if (c.key.startsWith('attachment:')) continue // les reminders sont listés par le pane (groupe « Reminders observés »)
+    if (rest.trim() === '') continue
+    if (c.key.startsWith('block:')) {
+      const name = c.key.slice('block:'.length)
+      engine.push(leaf({ id: `engine/block/${name}`, group: 'engine', title: `bloc de contexte ${name}`, text: rest, vanilla: true, source: { kind: 'engine' }, badges: ['prompt.context'] }))
       continue
     }
-    if (/^# MCP Server Instructions/m.test(s.text)) {
-      mcpText = s.text
-      continue
-    }
-    if (snap?.outputStyle && /^# Output Style: /m.test(s.text)) {
-      settingsDriven.push(leaf({
-        id: `settings/section/${s.id}`, group: 'settings', title: `Output style « ${snap.outputStyle} » (section ${s.id})`, text: s.text,
-        vanilla: false, source: { kind: 'settings', path: userSettingsPath, keyPath: ['outputStyle'] },
-        disable: { kind: 'remove-key', path: userSettingsPath, keyPath: ['outputStyle'] },
-        badges: ['settings.outputStyle', s.scope],
-      }))
-      continue
-    }
-    const item = leaf({ id: `${src.kind === 'engine' ? 'engine' : src.kind === 'builtin' ? 'app' : 'plugins'}/section/${s.id}`,
+    const src = sectionSource(c.key, userPlugins)
+    const item = leaf({ id: `${src.kind === 'engine' ? 'engine' : src.kind === 'builtin' ? 'app' : 'plugins'}/section/${c.key}`,
       group: src.kind === 'engine' ? 'engine' : src.kind === 'builtin' ? 'app' : 'plugins',
-      title: s.id, text: s.text, vanilla: src.kind !== 'plugin', source: src, badges: [s.scope] })
+      title: c.key, text: rest, vanilla: src.kind !== 'plugin', source: src, badges: [c.badge] })
     if (src.kind === 'engine') engine.push(item)
     else if (src.kind === 'builtin') app.push(item)
     else if (src.kind === 'plugin') pluginSections.set(src.name, [...(pluginSections.get(src.name) ?? []), item])
-  }
-  for (const b of snap?.blocks ?? []) {
-    if (b.name === 'claudeMd') continue
-    engine.push(leaf({ id: `engine/block/${b.name}`, group: 'engine', title: `bloc de contexte ${b.name}`, text: b.text, vanilla: true, source: { kind: 'engine' }, badges: ['prompt.context'] }))
   }
 
   // --- CLAUDE.md : ce que le moteur a chargé (observé), puis ce qu'il chargerait depuis le disque (non chargé dans cette session)
@@ -543,17 +586,22 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
   const projectMcp = await r.json(`${env.root}/.mcp.json`)
   if (isRecord(projectMcp) && isRecord(projectMcp.mcpServers)) for (const k of Object.keys(projectMcp.mcpServers)) localServers.add(k)
   const mcpHint = (server: string) => {
-    const m = server.match(/^plugin_(.+?)_[^_]+$/)
+    const m = server.match(/^plugin[_:](.+?)[_:][^_:]+$/)
     if (m) return `Serveur apporté par le plugin ${m[1]} : à couper avec le plugin.`
     if (localServers.has(server)) return `Serveur configuré localement (~/.claude.json ou .mcp.json) : retirer l'entrée \`${server}\` de mcpServers.`
     return 'Connecteur claude.ai : à déconnecter dans les réglages claude.ai (Connecteurs).'
   }
-  if (mcpText !== null) {
-    const parts = mcpText.split(/^## (.+)$/m)
-    mcp.push(leaf({ id: 'mcp/frame', group: 'mcp', title: 'Cadre MCP (moteur)', text: (parts[0] ?? '').trim(), vanilla: true, source: { kind: 'engine' } }))
+  // Les instructions serveur arrivent en une ou plusieurs fois (section, premier message, reminder d'un serveur
+  // connecté plus tard) : un item par serveur, le premier texte reçu fait foi ; le cadre vient du premier texte.
+  for (const { text, via } of mcpTexts) {
+    const parts = text.split(/^## (.+)$/m)
+    if (!mcp.some(i => i.id === 'mcp/frame')) {
+      mcp.push(leaf({ id: 'mcp/frame', group: 'mcp', title: 'Cadre MCP (moteur)', text: (parts[0] ?? '').trim(), vanilla: true, source: { kind: 'engine' }, badges: [via] }))
+    }
     for (let i = 1; i < parts.length; i += 2) {
       const server = (parts[i] ?? '').trim()
-      mcp.push(leaf({ id: `mcp/${server}`, group: 'mcp', title: server, text: (parts[i + 1] ?? '').trim(), vanilla: false, source: { kind: 'mcp', server }, hint: mcpHint(server), badges: ['instructions serveur'] }))
+      if (mcp.some(i => i.id === `mcp/${server}`)) continue
+      mcp.push(leaf({ id: `mcp/${server}`, group: 'mcp', title: server, text: (parts[i + 1] ?? '').trim(), vanilla: false, source: { kind: 'mcp', server }, hint: mcpHint(server), badges: ['instructions serveur', via] }))
     }
   }
 
@@ -582,7 +630,7 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
       vanilla: v.vanilla, source: server ? { kind: 'mcp', server } : { kind: 'engine' }, hint: server ? mcpHint(server) : undefined,
       badges: [server ? 'différés (noms seuls)' : 'décrits en entier'],
     }))
-    if (server && !mcp.some(i => i.id === `mcp/${server}`)) {
+    if (server && !mcp.some(i => i.source.kind === 'mcp' && mcpKey(i.source.server) === mcpKey(server))) {
       mcp.push(leaf({ id: `mcp/${server}`, group: 'mcp', title: server, text: `(sans instructions serveur) ${v.names.length} outils`, tokens: 0, vanilla: false, source: { kind: 'mcp', server }, hint: mcpHint(server), badges: ['sans instructions'] }))
     }
   }

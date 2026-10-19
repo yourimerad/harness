@@ -162,3 +162,71 @@ describe('buildInventory', () => {
     expect(group(inv, 'claudeMd').children).toEqual([])
   })
 })
+
+// Sous le preset SDK (app de bureau), le style de sortie, les instructions MCP et le cadre mémoire ne sont pas
+// des sections : ils voyagent dans le premier message ou en reminder, parfois plusieurs sujets dans un même texte.
+describe('buildInventory : marqueurs hors sections (preset SDK)', () => {
+  const noSections: Snapshot = { ...SNAP, outputStyle: null, sections: [{ id: 'lean_body', text: 'You are Claude Code.', scope: 'shared' }] }
+  const composite = [
+    '# Environment', 'You have been invoked in the following environment:', ' - Primary working directory: /Users/y/proj', '',
+    '# Output Style: Concise', 'Keep it short.', '', '# Concise Style Active', 'Lead with the result.', '',
+    'Available agent types for the Agent tool:', '- Explore: lit', '',
+    '# MCP Server Instructions', '', 'The following MCP servers have provided instructions:', '', '## claude-in-chrome', 'Load the tools first.', '',
+    '## plugin:small-business:gmail', 'Gmail API.', '', 'The following skills are available:', '- /grilling',
+  ].join('\n')
+
+  test('style de sortie et instructions MCP lus dans un bloc composite ; le reste du bloc reste au moteur', async () => {
+    const snap: Snapshot = { ...noSections, blocks: [{ name: 'sdkPreset', text: composite }] }
+    const inv = await buildInventory(io(), snap, env)
+    const style = group(inv, 'settings').children!.find(i => i.id === 'settings/section/block:sdkPreset')!
+    expect(style.title).toBe('Output style « Concise » (bloc sdkPreset)')
+    expect(style.text).toContain('# Concise Style Active')
+    expect(style.text).not.toContain('Available agent types')
+    expect(style.disable).toEqual({ kind: 'remove-key', path: `${HOME}/.claude/settings.json`, keyPath: ['outputStyle'] })
+    const mcp = group(inv, 'mcp').children!
+    expect(mcp.map(i => i.title)).toEqual(['Cadre MCP (moteur)', 'claude-in-chrome', 'plugin:small-business:gmail', 'vercel'])
+    expect(mcp[2]!.hint).toContain('plugin small-business')
+    const block = group(inv, 'engine').children!.find(i => i.id === 'engine/block/sdkPreset')!
+    expect(block.text).toContain('# Environment')
+    expect(block.text).toContain('Available agent types')
+    expect(block.text).not.toContain('# Output Style')
+    expect(block.text).not.toContain('## claude-in-chrome')
+  })
+
+  test('les mêmes marqueurs dans un reminder : un item par serveur, sans doublon, le reminder reste hors des groupes', async () => {
+    const later = '# MCP Server Instructions\n\n## plugin:small-business:gmail\nGmail API, encore.\n\n## plugin:small-business:shopify\nShopify.'
+    const snap: Snapshot = { ...noSections, blocks: [{ name: 'sdkPreset', text: composite }], attachments: [{ type: 'deferred_tools_delta', text: later, origin: 'engine' }] }
+    const inv = await buildInventory(io(), snap, env)
+    const mcp = group(inv, 'mcp').children!
+    expect(mcp.map(i => i.title)).toEqual(['Cadre MCP (moteur)', 'claude-in-chrome', 'plugin:small-business:gmail', 'plugin:small-business:shopify', 'vercel'])
+    expect(mcp.find(i => i.title === 'plugin:small-business:gmail')!.text).toBe('Gmail API.')
+    expect(mcp.find(i => i.title === 'plugin:small-business:shopify')!.badges).toContain('reminder deferred_tools_delta')
+    expect(leaves(inv.groups).some(i => i.id.includes('deferred_tools_delta') && i.group !== 'mcp' && i.group !== 'settings')).toBe(false)
+  })
+
+  test('style de sortie en reminder seul, sans `outputStyle` composé : le nom vient du titre', async () => {
+    const snap: Snapshot = { ...noSections, attachments: [{ type: 'instructions', text: '# Output Style: Bref\nCourt.', origin: 'engine' }] }
+    const inv = await buildInventory(io(), snap, env)
+    const style = group(inv, 'settings').children!.find(i => i.id.startsWith('settings/section/'))!
+    expect(style.title).toBe('Output style « Bref » (reminder instructions)')
+    expect(style.badges).toContain('prompt.attachment')
+  })
+
+  test('cadre mémoire dans un bloc : le dossier mémoire en est lu', async () => {
+    const snap: Snapshot = { ...noSections, blocks: [{ name: 'sdkPreset', text: `# Memory\n\nYou have a persistent file-based memory at \`${MEM}/\`.\n\n# Environment\nx` }] }
+    const inv = await buildInventory(io(), snap, env)
+    const mem = group(inv, 'memory').children!
+    expect(mem[0]!.title).toBe('Cadre mémoire (moteur)')
+    expect(mem[0]!.text).not.toContain('# Environment')
+    expect(mem.some(i => i.title === 'MEMORY.md (index)')).toBe(true)
+  })
+
+  test('un serveur épelé comme dans les noms d’outils rejoint l’item de ses instructions', async () => {
+    const snap: Snapshot = { ...noSections, blocks: [{ name: 'sdkPreset', text: composite }] }
+    const tools = async () => [{ name: 'mcp__plugin_small-business_gmail__get_message', description: 'Lit', mcp: true }]
+    const inv = await buildInventory({ ...io(), tools }, snap, env)
+    const mcp = group(inv, 'mcp').children!
+    expect(mcp.filter(i => i.title.includes('gmail'))).toHaveLength(1)
+    expect(group(inv, 'surface').children!.some(i => i.id === 'surface/tools/mcp:plugin_small-business_gmail')).toBe(true)
+  })
+})
