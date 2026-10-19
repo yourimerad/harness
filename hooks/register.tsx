@@ -260,6 +260,8 @@ export const register: Register = on => {
     return result
   })
 
+  // Le moteur ne redemande la plupart des attachments qu'une fois par processus : on garde tout ce qui a été vu,
+  // dédoublonné par type et texte, le plus récent en dernier.
   on('prompt.attachment', async ($, e, next) => {
     const result = await next(e)
     if (result.text === null) return result
@@ -268,10 +270,9 @@ export const register: Register = on => {
     const event = e.origin.kind === 'engine' ? undefined : e.origin.event
     const snap = await currentSnapshot($)
     const key = `${e.type}\u0000${hash(text)}`
-    if (!snap.attachments.some(a => `${a.type}\u0000${hash(a.text)}` === key)) {
-      const attachments = [...snap.attachments, { type: e.type, text, origin, ...(event ? { event } : {}) }].slice(-100)
-      await update($, snapshotAtom, () => ({ ...snap, attachments }))
-    }
+    const kept = snap.attachments.filter(a => `${a.type}\u0000${hash(a.text)}` !== key)
+    const attachments = [...kept, { type: e.type, text, origin, ...(event ? { event } : {}) }].slice(-100)
+    await update($, snapshotAtom, () => ({ ...snap, attachments }))
     return result
   })
 
@@ -282,12 +283,6 @@ export const register: Register = on => {
     const skillPrompts = [...snap.skillPrompts.filter(s => s.skill !== e.skill), { skill: e.skill, text: result.text, at }]
     await update($, snapshotAtom, () => ({ ...snap, skillPrompts }))
     return result
-  })
-
-  on('turn.start', async ($, e, next) => {
-    const snap = await currentSnapshot($)
-    await update($, snapshotAtom, () => ({ ...snap, attachments: [] }))
-    return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {

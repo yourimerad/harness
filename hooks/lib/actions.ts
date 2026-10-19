@@ -47,6 +47,10 @@ const removeFile = async (io: ActionIo, path: string): Promise<boolean> => {
   }
 }
 
+/** Quand le moteur relit la source : un CLAUDE.md déjà chargé l'est à la prochaine session ou compaction. */
+const rereadNote = (item: Item) =>
+  item.group === 'claudeMd' ? ' Le moteur relira ce fichier à la prochaine session ou compaction.' : item.group === 'memory' ? ' Pris en compte au prochain rendu de la section mémoire.' : ''
+
 /** CLAUDE.md vit dans les blocs de contexte ; la mémoire dans une section ; le reste prend effet à la prochaine session. */
 const invalidationsFor = (item: Item): Invalidation[] =>
   item.group === 'claudeMd' ? ['prompt.context'] : item.group === 'memory' ? ['prompt.section'] : []
@@ -105,7 +109,7 @@ const disableUnguarded = async (io: ActionIo, env: ActionEnv, item: Item): Promi
     }
     await appendJournal(io, env, { action: 'remove-unit', target: d.path, before: out.removed.text, note: out.removed.title })
     await io.write(d.path, out.text)
-    return { ok: true, notice: `Retiré de ${d.path} : « ${out.removed.title} »`, invalidate: inv }
+    return { ok: true, notice: `Retiré de ${d.path} : « ${out.removed.title} ».${rereadNote(item)}`, invalidate: inv }
   }
 
   if (d.kind === 'remove-file') {
@@ -189,7 +193,7 @@ const inlineEditUnguarded = async (io: ActionIo, env: ActionEnv, item: Item, val
     if (out === null) return { ok: false, notice: 'Unité introuvable ou multi-ligne : édition par le composer.', invalidate: [] }
     await appendJournal(io, env, { action: 'edit-unit', target: src.path, before: item.text, after: value })
     await io.write(src.path, out)
-    return { ok: true, notice: `Modifié dans ${src.path}.`, invalidate: invalidationsFor(item) }
+    return { ok: true, notice: `Modifié dans ${src.path}.${rereadNote(item)}`, invalidate: invalidationsFor(item) }
   }
   if (src.kind === 'settings') {
     if (!isWritable(src.path, env)) return { ok: false, notice: `Hors périmètre : ${src.path}`, invalidate: [] }

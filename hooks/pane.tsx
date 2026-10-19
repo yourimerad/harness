@@ -48,10 +48,10 @@ export const remindersGroup = (snap: Snapshot | null): Item => {
     vanilla: a.origin === 'engine',
     source: a.origin === 'engine' ? { kind: 'engine' } : a.origin === 'plugin' ? { kind: 'plugin', name: a.event ?? '?' } : { kind: 'unknown' },
     hint: a.origin === 'engine' ? undefined : a.origin === 'hook' ? `Texte produit par un hook settings/plugin (${a.event ?? '?'}) : à couper dans le groupe Hooks.` : 'Texte attaché par un plugin : à couper avec le plugin.',
-    badges: [a.origin, 'ce tour'],
+    badges: [a.origin, 'observé dans ce processus'],
   }))
   return {
-    id: 'reminders', group: 'reminders', title: 'Reminders du tour', text: '', vanilla: children.every(c => c.vanilla),
+    id: 'reminders', group: 'reminders', title: 'Reminders observés', text: '', vanilla: children.every(c => c.vanilla),
     tokens: children.reduce((n, c) => n + c.tokens, 0), source: { kind: 'unknown' }, children,
   }
 }
@@ -101,7 +101,7 @@ export const renderPane = (els: PaneElements, e: Extract<RenderInput, { componen
 
   const badgeLine = (item: Item) =>
     [item.vanilla ? 'vanilla' : 'non-vanilla', sourceLine(item, model.home), `${formatTokens(item.tokens)} tok`, ...(item.badges ?? [])]
-      .concat(model.ui.pending.includes(item.id) ? ['retiré · en attente du prochain tour'] : [])
+      .concat(model.ui.pending.includes(item.id) ? ['retiré de la source · le contexte le garde jusqu’à relecture par le moteur'] : [])
       .concat(sourcePath(item) && model.ui.changedOutside.includes(sourcePath(item)!) ? ['modifié hors du mod'] : [])
       .join(' · ')
 

@@ -73,6 +73,15 @@ const makeReader = (io: InventoryIo): Reader => {
 
 const short = (path: string, home: string) => (path.startsWith(home) ? `~${path.slice(home.length)}` : path)
 
+/** Comparaison lâche entre le texte chargé par le moteur (frontmatter et commentaires retirés) et le disque. */
+const loose = (text: string) =>
+  text
+    .replace(/^\uFEFF/, '')
+    .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 const leaf = (partial: Omit<Item, 'tokens'> & { tokens?: number }): Item => ({
@@ -289,37 +298,47 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
     engine.push(leaf({ id: `engine/block/${b.name}`, group: 'engine', title: `bloc de contexte ${b.name}`, text: b.text, vanilla: true, source: { kind: 'engine' }, badges: ['prompt.context'] }))
   }
 
-  // --- CLAUDE.md
+  // --- CLAUDE.md : ce que le moteur a chargé (observé), puis ce qu'il chargerait depuis le disque (non chargé dans cette session)
   const claudeMd: Item[] = []
-  const observedClaudeMd = (snap?.instructionFiles.length ?? 0) > 0
-  if (observedClaudeMd) {
-    for (const f of snap!.instructionFiles) {
-      const text = (await r.text(f.path)) ?? f.content
-      const tier = (['managed', 'user', 'project', 'local', 'memory'] as const).find(t => t === f.kind) ?? 'project'
-      claudeMd.push(fileItem('claudeMd', f.path, text, tier, env.home, { badges: ['observé', ...(f.parent ? [`importé par ${short(f.parent, env.home)}`] : [])] }))
+  const observed = snap?.instructionFiles ?? []
+  const observedClaudeMd = observed.length > 0
+  const seen = new Set<string>()
+  for (const f of observed) {
+    const disk = await r.text(f.path)
+    const text = disk ?? f.content
+    const tier = (['managed', 'user', 'project', 'local', 'memory'] as const).find(t => t === f.kind) ?? 'project'
+    const badges = ['observé']
+    if (disk !== null && loose(disk) !== loose(f.content)) badges.push('disque ≠ contexte : le moteur relira le fichier à la prochaine session')
+    if (f.parent) badges.push(`importé par ${short(f.parent, env.home)}`)
+    claudeMd.push(fileItem('claudeMd', f.path, text, tier, env.home, { badges }))
+    seen.add(f.path)
+  }
+  const diskBadge = observedClaudeMd ? 'sur disque, non chargé dans cette session' : 'reconstruit'
+  const pushDisk = async (path: string, tier: Extract<Source, { kind: 'file' }>['tier'], badge: string) => {
+    if (seen.has(path)) return
+    const text = await r.text(path)
+    if (text === null) return
+    seen.add(path)
+    claudeMd.push(fileItem('claudeMd', path, text, tier, env.home, { badges: [diskBadge, badge] }))
+  }
+  await pushDisk(`${env.home}/.claude/CLAUDE.md`, 'user', 'global')
+  for (const name of await r.list(`${env.home}/.claude/rules`)) if (name.endsWith('.md')) await pushDisk(`${env.home}/.claude/rules/${name}`, 'rule', 'règle globale')
+  let ancestors: Awaited<ReturnType<InventoryIo['ancestors']>> = []
+  try {
+    ancestors = await io.ancestors(['CLAUDE.md', 'CLAUDE.local.md'])
+  } catch {
+    ancestors = []
+  }
+  for (const a of ancestors) {
+    for (const part of a.parts) {
+      await pushDisk(part.path, a.name.endsWith('.local.md') ? 'local' : 'project', part.path === `${a.dir}/${a.name}` ? 'chaîne' : 'import')
     }
-  } else {
-    const push = async (path: string, tier: Extract<Source, { kind: 'file' }>['tier'], badge: string) => {
-      const text = await r.text(path)
-      if (text !== null) claudeMd.push(fileItem('claudeMd', path, text, tier, env.home, { badges: ['reconstruit', badge] }))
-    }
-    await push(`${env.home}/.claude/CLAUDE.md`, 'user', 'global')
-    for (const name of await r.list(`${env.home}/.claude/rules`)) if (name.endsWith('.md')) await push(`${env.home}/.claude/rules/${name}`, 'rule', 'règle globale')
-    let ancestors: Awaited<ReturnType<InventoryIo['ancestors']>> = []
-    try {
-      ancestors = await io.ancestors(['CLAUDE.md', 'CLAUDE.local.md'])
-    } catch {
-      ancestors = []
-    }
-    for (const a of ancestors) {
-      for (const part of a.parts) {
-        if (claudeMd.some(i => i.source.kind === 'file' && i.source.path === part.path)) continue
-        const text = (await r.text(part.path)) ?? part.content
-        claudeMd.push(fileItem('claudeMd', part.path, text, a.name.endsWith('.local.md') ? 'local' : 'project', env.home, { badges: ['reconstruit', part.path === `${a.dir}/${a.name}` ? 'chaîne' : 'import'] }))
-      }
-    }
-    await push(`${env.root}/.claude/CLAUDE.md`, 'project', '.claude/')
-    for (const name of await r.list(`${env.root}/.claude/rules`)) if (name.endsWith('.md')) await push(`${env.root}/.claude/rules/${name}`, 'rule', 'règle projet')
+  }
+  for (const dir of [...new Set([env.cwd, env.root])]) {
+    await pushDisk(`${dir}/CLAUDE.md`, 'project', 'dossier de travail')
+    await pushDisk(`${dir}/CLAUDE.local.md`, 'local', 'dossier de travail')
+    await pushDisk(`${dir}/.claude/CLAUDE.md`, 'project', '.claude/')
+    for (const name of await r.list(`${dir}/.claude/rules`)) if (name.endsWith('.md')) await pushDisk(`${dir}/.claude/rules/${name}`, 'rule', 'règle projet')
   }
 
   // --- mémoire
@@ -577,7 +596,7 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
   const groups: Item[] = [
     groupItem('engine', 'Moteur (vanilla)', engine, true),
     groupItem('app', 'App et plugins intégrés (vanilla)', app, true),
-    groupItem('claudeMd', `CLAUDE.md et règles${observedClaudeMd ? '' : ' (reconstruit)'}`, claudeMd, false),
+    groupItem('claudeMd', `CLAUDE.md et règles${observedClaudeMd ? '' : ' (reconstruit depuis le disque)'}`, claudeMd, false),
     groupItem('memory', 'Mémoire', memory, false),
     groupItem('settings', 'Settings', settings, false),
     groupItem('hooks', 'Hooks', hooks, false),

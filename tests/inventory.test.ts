@@ -55,9 +55,20 @@ describe('buildInventory', () => {
     const inv = await buildInventory(io(), snap, env)
     expect(inv.observedClaudeMd).toBe(true)
     const files = group(inv, 'claudeMd').children!
-    expect(files.map(f => (f.source.kind === 'file' ? f.source.path : ''))).toEqual([`${CWD}/CLAUDE.md`])
+    // l'observé d'abord, puis ce que le disque porte et que le moteur n'a pas chargé dans cette session
+    expect(files.map(f => (f.source.kind === 'file' ? f.source.path : ''))).toEqual([`${CWD}/CLAUDE.md`, `${HOME}/.claude/CLAUDE.md`])
     expect(files[0]!.badges).toContain('observé')
     expect(files[0]!.children![0]!.title).toBe('règle projet')
+    expect(files[1]!.badges).toContain('sur disque, non chargé dans cette session')
+  })
+
+  test('CLAUDE.md observé dont le disque a changé : badge de relecture', async () => {
+    const snap: Snapshot = { ...SNAP, instructionFiles: [{ path: `${HOME}/.claude/CLAUDE.md`, kind: 'user', content: '# Contexte\n\n## Machine\n- Locale française.\n' }] }
+    const inv = await buildInventory(io(), snap, env)
+    const file = group(inv, 'claudeMd').children![0]!
+    expect(file.badges!.some(b => b.startsWith('disque ≠ contexte'))).toBe(true)
+    // les unités viennent du disque (3), pas du contexte (1)
+    expect(file.children).toHaveLength(3)
   })
 
   test('mémoire : le dossier vient de la section, les notes pointent leur ligne d’index', async () => {
