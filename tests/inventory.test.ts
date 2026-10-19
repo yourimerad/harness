@@ -394,3 +394,86 @@ describe('vues du pane', () => {
     expect(viewFromArg('zzz')).toBeNull()
   })
 })
+
+describe('style de sortie sans marqueur observé (preset SDK)', () => {
+  const noStyle: Snapshot = { ...SNAP, outputStyle: null, sections: SNAP.sections.filter(s => s.id !== 'style') }
+  const styleItems = (inv: Awaited<ReturnType<typeof buildInventory>>) => group(inv, 'settings').children!.filter(i => i.title.startsWith('Output style'))
+
+  test('style intégré : item construit depuis settings.outputStyle, poids estimé, désactivable', async () => {
+    const inv = await buildInventory(io(), noStyle, env)
+    const items = styleItems(inv)
+    expect(items).toHaveLength(1)
+    const style = items[0]!
+    expect(style.id).toBe('settings/style')
+    expect(style.title).toBe('Output style « Concise »')
+    expect(style.tokens).toBe(400)
+    expect(style.vanilla).toBe(false)
+    expect(style.badges).toContain('style intégré : texte non lisible')
+    expect(style.disable).toEqual({ kind: 'remove-key', path: `${HOME}/.claude/settings.json`, keyPath: ['outputStyle'] })
+    expect(style.edit).toBe('inline')
+    expect(inv.count).toBeGreaterThan(0)
+  })
+
+  test('fichier du style sur disque : le texte est le corps du fichier, retrouvé par son frontmatter name', async () => {
+    const files = { ...FILES, [`${HOME}/.claude/output-styles/bref.md`]: '---\nname: Concise\ndescription: court\n---\n\nSois bref.\n' }
+    const dirs = { ...DIRS, [`${HOME}/.claude/output-styles`]: ['bref.md'] }
+    const inv = await buildInventory(io(files, dirs), noStyle, env)
+    const style = styleItems(inv)[0]!
+    expect(style.text).toBe('Sois bref.')
+    expect(style.source).toEqual({ kind: 'file', path: `${HOME}/.claude/output-styles/bref.md`, tier: 'user' })
+    expect(style.edit).toBe('prompt')
+    expect(style.badges).toContain('prompt du style lu sur disque')
+    expect(style.disable?.kind).toBe('remove-key')
+  })
+
+  test('le fichier projet l’emporte sur le fichier utilisateur, et le nom de fichier suffit', async () => {
+    const files = {
+      ...FILES,
+      [`${HOME}/.claude/output-styles/concise.md`]: 'Utilisateur.\n',
+      [`${CWD}/.claude/output-styles/concise.md`]: 'Projet.\n',
+    }
+    const dirs = { ...DIRS, [`${HOME}/.claude/output-styles`]: ['concise.md'], [`${CWD}/.claude/output-styles`]: ['concise.md'] }
+    const inv = await buildInventory(io(files, dirs), noStyle, env)
+    const style = styleItems(inv)[0]!
+    expect(style.text).toBe('Projet.')
+    expect(style.source).toEqual({ kind: 'file', path: `${CWD}/.claude/output-styles/concise.md`, tier: 'project' })
+  })
+
+  test('la source settings la plus haute gagne : outputStyle du projet plutôt que de l’utilisateur', async () => {
+    const files = { ...FILES, [`${CWD}/.claude/settings.json`]: JSON.stringify({ outputStyle: 'Explanatory' }, null, 2) }
+    const inv = await buildInventory(io(files, DIRS), noStyle, env)
+    const style = styleItems(inv)[0]!
+    expect(style.title).toBe('Output style « Explanatory »')
+    expect(style.disable).toEqual({ kind: 'remove-key', path: `${CWD}/.claude/settings.json`, keyPath: ['outputStyle'] })
+  })
+
+  test('marqueur observé : un seul item de style, celui du texte observé', async () => {
+    const inv = await buildInventory(io(), SNAP, env)
+    const items = styleItems(inv)
+    expect(items).toHaveLength(1)
+    expect(items[0]!.id.startsWith('settings/section/')).toBe(true)
+    expect(items[0]!.text).toContain('Keep it short.')
+  })
+
+  test('sans outputStyle dans aucun settings : pas d’item de style', async () => {
+    const settings = JSON.parse(FILES[`${HOME}/.claude/settings.json`]!) as Record<string, unknown>
+    delete settings.outputStyle
+    const files = { ...FILES, [`${HOME}/.claude/settings.json`]: JSON.stringify(settings, null, 2) }
+    const inv = await buildInventory(io(files, DIRS), noStyle, env)
+    expect(styleItems(inv)).toHaveLength(0)
+  })
+})
+
+describe('serveurs MCP dont les instructions ne sont pas observées', () => {
+  test('badge « instructions non observables », texte explicite, poids nul, pointeur conservé', async () => {
+    const withOther = { ...io(), tools: async () => [...(await io().tools()), { name: 'mcp__ccd_turn__wrap_up', description: 'Boîte de fin de tour', mcp: true }] }
+    const inv = await buildInventory(withOther, SNAP, env)
+    const other = group(inv, 'mcp').children!.find(i => i.title === 'ccd_turn')!
+    expect(other.badges).toContain('instructions non observables')
+    expect(other.text).toContain('mcp_instructions_delta')
+    expect(other.tokens).toBe(0)
+    expect(other.hint).toBeDefined()
+    // un serveur dont les instructions ont été vues garde son texte
+    expect(group(inv, 'mcp').children!.find(i => i.title === 'vercel')!.text).toBe('Use tool schemas.')
+  })
+})

@@ -113,6 +113,9 @@ export function toolProvider(name: string): { kind: 'engine' | 'mcp'; server?: s
 
 ## Flux
 
+- Style de sortie : l'item vient du marqueur `# Output Style:` quand un hook l'a vu ; sinon de `settings.outputStyle` et du fichier du style sur disque (style intégré : texte non lisible, poids estimé). Jamais les deux.
+- Instructions MCP : un item par serveur quand un marqueur les porte ; sinon badge « instructions non observables » (aucune API côté hooks ne les expose).
+
 - `session.start` : enregistre `/harness`, lit settings + disque, appelle `$.prompt.compose()`, écrit le snapshot, met à jour la status line.
 - `prompt.compose` / `prompt.context` / `prompt.attachment` / `skill.prompt` : `next(e)` intact, copie du résultat dans le snapshot, marque « capture arrivée ». Les attachments sont gardés dédoublonnés (type + texte), le moteur ne les redemandant qu'une fois par processus.
 - Veille (`$.clock.every`, 5 s) : reconstruit si une capture est arrivée (l'export suit le premier message sans attendre la fin du tour) ; pane affiché, relit aussi le disque quand un mtime bouge.
