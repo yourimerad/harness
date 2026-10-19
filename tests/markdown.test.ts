@@ -20,6 +20,14 @@ function removed(doc: string, prefix: string): string | null {
 const USER_DOC =
   '# Titre\n\n## Machine\n- puce 1\n- puce 2 avec `code`\n\n## Code\n- puce 3\n  - sous-puce\n  suite indentée\n- puce 4\n'
 
+/** Fence ouvert dans une puce et jamais fermé, suivi de sections et d'un vrai bloc de code à la marge. */
+const UNCLOSED_FENCE_DOC =
+  '## Outils\n- Exemple :\n  ```sh\n  pnpm i\n- Toujours lancer les tests\n\n## Déploiement\n- Vercel\n\n```ts\nconst x = 1\n```\n'
+
+/** Balises collées autour de puces, sans ligne vide. */
+const IMPORTANT_DOC =
+  '# Règles\n\n<important>\n- Ne jamais committer de secrets\n- Toujours lancer les tests\n</important>\n\n## Suite\n- x\n'
+
 describe('parseUnits : fichier type CLAUDE.md', () => {
   test('quatre puces de premier niveau, avec leurs chemins de titres', () => {
     const doc = parseUnits(USER_DOC)
@@ -133,11 +141,51 @@ describe('parseUnits : listes', () => {
     expect(doc.units.map(u => u.kind)).toEqual(['bullet', 'paragraph'])
   })
 
-  test('texte collé sans indentation : continuation de la puce (un bloc, pas de ligne orpheline)', () => {
+  test('texte collé sans indentation : nouvelle unité, jamais la suite de la puce (pas de continuation paresseuse)', () => {
     const doc = parseUnits('- une règle longue\nqui continue ici\n- autre\n')
-    expect(doc.units).toHaveLength(2)
-    expect(doc.units[0]?.text).toBe('- une règle longue\nqui continue ici')
+    expect(doc.units.map(u => u.kind)).toEqual(['bullet', 'paragraph', 'bullet'])
+    expect(doc.units.map(u => u.text)).toEqual(['- une règle longue', 'qui continue ici', '- autre'])
+    expect(doc.units[0]?.isSingleLine).toBe(true)
+  })
+
+  test('une puce ne possède que ses lignes indentées : la ligne non indentée qui suit ouvre une unité', () => {
+    const doc = parseUnits('- a\n  suite indentée\nnon indenté\n')
+    expect(doc.units.map(u => u.kind)).toEqual(['bullet', 'paragraph'])
+    expect(doc.units[0]?.text).toBe('- a\n  suite indentée')
+    expect(doc.units[1]?.text).toBe('non indenté')
+  })
+
+  test('balises collées autour de puces : la balise fermante est un paragraphe à part, les puces sont mono-ligne', () => {
+    const doc = parseUnits(IMPORTANT_DOC)
+    expect(doc.units.map(u => u.kind)).toEqual(['paragraph', 'bullet', 'bullet', 'paragraph', 'bullet'])
+    expect(doc.units.map(u => u.text)).toEqual([
+      '<important>',
+      '- Ne jamais committer de secrets',
+      '- Toujours lancer les tests',
+      '</important>',
+      '- x',
+    ])
+    expect(doc.units.map(u => u.isSingleLine)).toEqual([true, true, true, true, true])
+    expect(doc.units.map(u => u.headingPath)).toEqual([['Règles'], ['Règles'], ['Règles'], ['Règles'], ['Règles', 'Suite']])
+  })
+
+  test('une tabulation compte comme indentation, même sous un marqueur décalé de 3 espaces', () => {
+    const doc = parseUnits('   - a\n\tsuite tabulée\n   - b\n')
+    expect(doc.units.map(u => u.text)).toEqual(['   - a\n\tsuite tabulée', '   - b'])
+  })
+
+  test('« 2026. » en début de ligne indentée reste dans la puce ; seuls « - », « * », « + », « 1. » et « 1) » ouvrent une sous-puce', () => {
+    const doc = parseUnits('- La version sortie en\n  2026. Elle marche\n')
+    expect(doc.units).toHaveLength(1)
+    expect(doc.units[0]?.text).toBe('- La version sortie en\n  2026. Elle marche')
     expect(doc.units[0]?.isSingleLine).toBe(false)
+    const nested = parseUnits('- a\n  1. un\n  1) deux\n  - trois\n  2026. année\n- b\n')
+    expect(nested.units.map(u => u.text)).toEqual(['- a\n  1. un\n  1) deux\n  - trois\n  2026. année', '- b'])
+  })
+
+  test('« 2026. » collé sans indentation sous une puce n\'est pas la suite de la puce', () => {
+    const doc = parseUnits('- La version sortie en\n2026. Elle marche\n')
+    expect(doc.units.map(u => u.text)).toEqual(['- La version sortie en', '2026. Elle marche'])
   })
 
   test('un titre, un fence, une citation ou un tableau collés interrompent la puce', () => {
@@ -146,12 +194,60 @@ describe('parseUnits : listes', () => {
     expect(doc.headings).toHaveLength(1)
   })
 
-  test('un fence indenté dans une puce appartient à la puce, même si son contenu est à la marge', () => {
-    const doc = parseUnits('- exemple :\n  ```sh\n# commentaire\n- pas une puce\n  ```\n- suivant\n')
+  test('un fence indenté dans une puce appartient à la puce, de son ouverture à sa fermeture', () => {
+    const doc = parseUnits('- exemple :\n  ```sh\n  # commentaire\n  - pas une puce\n\n  suite du code\n  ```\n- suivant\n')
     expect(doc.units).toHaveLength(2)
     expect(doc.units[0]?.kind).toBe('bullet')
-    expect(doc.units[0]?.text).toBe('- exemple :\n  ```sh\n# commentaire\n- pas une puce\n  ```')
+    expect(doc.units[0]?.text).toBe('- exemple :\n  ```sh\n  # commentaire\n  - pas une puce\n\n  suite du code\n  ```')
     expect(doc.headings).toHaveLength(0)
+  })
+
+  test('le fence d\'une puce ne survit pas à sa puce : une ligne à la marge, même au milieu du code, les referme', () => {
+    const doc = parseUnits('- exemple :\n  ```sh\n# commentaire\n- pas une puce\n  ```\n- suivant\n')
+    expect(doc.units.map(u => u.text)).toEqual(['- exemple :\n  ```sh', '- pas une puce\n  ```', '- suivant'])
+    expect(doc.headings.map(h => h.title)).toEqual(['commentaire'])
+  })
+
+  test('un fence non fermé dans une puce se ferme avec la puce : il ne court pas jusqu\'à la fin du fichier', () => {
+    const doc = parseUnits(UNCLOSED_FENCE_DOC)
+    expect(doc.headings.map(h => h.title)).toEqual(['Outils', 'Déploiement'])
+    expect(doc.units.map(u => u.kind)).toEqual(['bullet', 'bullet', 'bullet', 'code'])
+    expect(doc.units.map(u => u.text)).toEqual([
+      '- Exemple :\n  ```sh\n  pnpm i',
+      '- Toujours lancer les tests',
+      '- Vercel',
+      '```ts\nconst x = 1\n```',
+    ])
+    expect(doc.units.map(u => u.headingPath)).toEqual([['Outils'], ['Outils'], ['Déploiement'], ['Déploiement']])
+    expect(doc.units[0]?.isSingleLine).toBe(false)
+    expect(doc.units[1]?.isSingleLine).toBe(true)
+  })
+
+  test('un fence non fermé dans une puce reste ouvert sur les lignes indentées et sur les vides suivies d\'une ligne indentée', () => {
+    const doc = parseUnits('- a\n  ```\n  x\n\n  y\n- b\n')
+    expect(doc.units.map(u => u.text)).toEqual(['- a\n  ```\n  x\n\n  y', '- b'])
+  })
+
+  test('un fence non fermé dans une puce : des vides suivis d\'une ligne non indentée le referment avec la puce', () => {
+    const doc = parseUnits('- a\n  ```\n  x\n\n\nTexte libre\n\n- b\n')
+    expect(doc.units.map(u => [u.kind, u.text])).toEqual([
+      ['bullet', '- a\n  ```\n  x'],
+      ['paragraph', 'Texte libre'],
+      ['bullet', '- b'],
+    ])
+  })
+
+  test('un fence non fermé dans une sous-puce ne déborde pas non plus', () => {
+    const doc = parseUnits('- a\n  - b\n    ```\n    x\n- c\n\n# T\n- d\n')
+    expect(doc.units.map(u => u.text)).toEqual(['- a\n  - b\n    ```\n    x', '- c', '- d'])
+    expect(doc.headings.map(h => h.title)).toEqual(['T'])
+  })
+
+  test('un fence non fermé dans une puce, puis un fence ouvert à la marge : la fermeture à la marge ne ferme pas celui de la puce', () => {
+    const doc = parseUnits('- a\n  ```\n  x\n```\nsuite\n```\n')
+    expect(doc.units.map(u => u.kind)).toEqual(['bullet', 'code'])
+    expect(doc.units[0]?.text).toBe('- a\n  ```\n  x')
+    expect(doc.units[1]?.text).toBe('```\nsuite\n```')
   })
 
   test('texte non indenté juste après un bloc de code fermé dans la puce : nouveau paragraphe, pas une continuation', () => {
@@ -196,7 +292,8 @@ describe('parseUnits : paragraphes', () => {
 
   test('un paragraphe est interrompu par un titre, une puce, un fence, une citation, un tableau', () => {
     const doc = parseUnits('texte\n# Titre\ntexte 2\n- puce\ntexte 3\n```\nc\n```\n> q\n| t |\n')
-    expect(doc.units.map(u => u.kind)).toEqual(['paragraph', 'paragraph', 'bullet', 'code', 'quote', 'table'])
+    expect(doc.units.map(u => u.kind)).toEqual(['paragraph', 'paragraph', 'bullet', 'paragraph', 'code', 'quote', 'table'])
+    expect(doc.units.map(u => u.text)).toEqual(['texte', 'texte 2', '- puce', 'texte 3', '```\nc\n```', '> q', '| t |'])
   })
 
   test('seul « 1. » interrompt un paragraphe : « 2026. » en début de ligne reste dans le texte', () => {
@@ -397,6 +494,68 @@ describe('parseUnits : fins de ligne Windows', () => {
   })
 })
 
+describe('BOM UTF-8 en tête', () => {
+  const BOM = '\uFEFF'
+
+  test('le frontmatter est reconnu malgré le BOM, qui n\'entre ni dans le frontmatter ni dans une unité', () => {
+    const doc = parseUnits(`${BOM}---\nname: x\n---\n- puce\n`)
+    expect(doc.frontmatter).toBe('---\nname: x\n---')
+    expect(doc.units.map(u => u.text)).toEqual(['- puce'])
+  })
+
+  test('un titre en première ligne est reconnu malgré le BOM', () => {
+    const doc = parseUnits(`${BOM}# Titre\n- a\n`)
+    expect(doc.headings).toEqual([{ level: 1, title: 'Titre', line: 0 }])
+    expect(doc.units[0]?.headingPath).toEqual(['Titre'])
+  })
+
+  test('mêmes unités et mêmes ids avec ou sans BOM', () => {
+    expect(parseUnits(BOM + USER_DOC)).toEqual(parseUnits(USER_DOC))
+    expect(parseUnits(`${BOM}---\nname: x\n---\n- a\n`)).toEqual(parseUnits('---\nname: x\n---\n- a\n'))
+  })
+
+  test('removeUnit remet le BOM en tête du texte retourné, une seule fois', () => {
+    const doc = BOM + USER_DOC
+    const r = removeUnit(doc, unit(doc, '- puce 3').id)
+    expect(r?.text).toBe(BOM + '# Titre\n\n## Machine\n- puce 1\n- puce 2 avec `code`\n\n## Code\n- puce 4\n')
+    expect(r?.text?.charAt(0)).toBe(BOM)
+    expect(r?.text?.charAt(1)).not.toBe(BOM)
+  })
+
+  test('removeUnit : le titre de tête retiré en cascade est reconnu, le BOM revient devant ce qui reste', () => {
+    const doc = `${BOM}# A\n- a\n# B\n- b\n`
+    expect(removed(doc, '- a')).toBe(`${BOM}# B\n- b\n`)
+  })
+
+  test('removeUnit : retirer la première unité du fichier remet le BOM devant la suivante', () => {
+    const doc = `${BOM}- a\n- b\n`
+    expect(removed(doc, '- a')).toBe(`${BOM}- b\n`)
+    expect(removed(`${BOM}para 1\n\npara 2\n`, 'para 1')).toBe(`${BOM}para 2\n`)
+  })
+
+  test('removeUnit avec frontmatter : le BOM reste devant le frontmatter', () => {
+    const doc = `${BOM}---\nname: x\n---\n\n- a\n\n- b\n`
+    expect(removed(doc, '- a')).toBe(`${BOM}---\nname: x\n---\n\n- b\n`)
+  })
+
+  test('removeUnit : la dernière unité d\'un fichier à BOM donne toujours text null', () => {
+    expect(removed(`${BOM}# T\n- seule\n`, '- seule')).toBeNull()
+  })
+
+  test('replaceUnit remet le BOM en tête du texte retourné', () => {
+    const doc = `${BOM}---\nname: x\n---\n- old\n- z\n`
+    expect(replaceUnit(doc, unit(doc, '- old').id, 'new')).toBe(`${BOM}---\nname: x\n---\n- new\n- z\n`)
+    const titled = `${BOM}# T\n- old\n`
+    expect(replaceUnit(titled, unit(titled, '- old').id, 'new')).toBe(`${BOM}# T\n- new\n`)
+  })
+
+  test('sans BOM en entrée, aucun BOM en sortie', () => {
+    const doc = '# T\n- a\n- b\n'
+    expect(removed(doc, '- a')?.includes(BOM)).toBe(false)
+    expect(replaceUnit(doc, unit(doc, '- a').id, 'x')?.includes(BOM)).toBe(false)
+  })
+})
+
 describe('removeUnit', () => {
   test('retire la puce multi-ligne entière et garde le reste intact', () => {
     expect(removed(USER_DOC, '- puce 3')).toBe(
@@ -433,6 +592,25 @@ describe('removeUnit', () => {
   test('un titre déjà vide avant le retrait, sans rapport avec l\'unité, est conservé', () => {
     const doc = '## Vide\n\n## Plein\n- a\n- b\n'
     expect(removed(doc, '- a')).toBe('## Vide\n\n## Plein\n- b\n')
+  })
+
+  test('un sous-titre vide d\'un titre retiré en cascade part avec lui : aucun sous-titre orphelin ne remonte', () => {
+    const doc = '# A\n## Empty\n## B\n- b\n# C\n- c\n'
+    expect(removed(doc, '- b')).toBe('# C\n- c\n')
+  })
+
+  test('… à toute profondeur, avant comme après l\'unité retirée', () => {
+    expect(removed('# A\n## B\n### Vide\n## C\n- c\n# D\n- d\n', '- c')).toBe('# D\n- d\n')
+    expect(removed('# A\n- a\n## Vide\n# B\n- b\n', '- a')).toBe('# B\n- b\n')
+  })
+
+  test('un sous-titre vide dont l\'ancêtre n\'est pas retiré reste', () => {
+    expect(removed('# A\n## Vide\n## B\n- b\n- b2\n', '- b')).toBe('# A\n## Vide\n## B\n- b2\n')
+    expect(removed('# A\n## Vide\n## B\n- b\n# C\n- c\n', '- c')).toBe('# A\n## Vide\n## B\n- b\n')
+  })
+
+  test('un titre vide frère du sous-arbre retiré, hors de ce sous-arbre, reste', () => {
+    expect(removed('# A\n- a\n\n# Vide\n\n# B\n- b\n', '- b')).toBe('# A\n- a\n\n# Vide\n')
   })
 
   test('retirer toutes les unités sous « # Titre » (titres imbriqués) donne text null', () => {
@@ -521,7 +699,7 @@ describe('removeUnit', () => {
 
   test('retirer un bloc entre une puce et du texte collé ne fait pas absorber le texte par la puce', () => {
     const out = removed('- a\n```\nx\n```\ntexte\n', '```')
-    expect(out).toBe('- a\n\ntexte\n')
+    expect(out).toBe('- a\ntexte\n')
     expect(parseUnits(out ?? '').units.map(u => u.kind)).toEqual(['bullet', 'paragraph'])
   })
 
@@ -531,6 +709,24 @@ describe('removeUnit', () => {
     const reparsed = parseUnits(out)
     expect(reparsed.frontmatter).toBeNull()
     expect(reparsed.units.map(u => u.text)).toEqual(['---', 'texte', '---', 'fin'])
+  })
+
+  test('retirer une puce collée à une balise fermante laisse la balise en place', () => {
+    const out = removed(IMPORTANT_DOC, '- Toujours lancer les tests')
+    expect(out).toBe('# Règles\n\n<important>\n- Ne jamais committer de secrets\n</important>\n\n## Suite\n- x\n')
+    expect(parseUnits(out ?? '').units.map(u => u.text)).toEqual([
+      '<important>',
+      '- Ne jamais committer de secrets',
+      '</important>',
+      '- x',
+    ])
+  })
+
+  test('retirer une puce voisine d\'un fence non fermé n\'emporte ni les sections ni le bloc de code suivants', () => {
+    const out = removed(UNCLOSED_FENCE_DOC, '- Toujours lancer les tests')
+    expect(out).toBe('## Outils\n- Exemple :\n  ```sh\n  pnpm i\n\n## Déploiement\n- Vercel\n\n```ts\nconst x = 1\n```\n')
+    const exemple = removed(UNCLOSED_FENCE_DOC, '- Exemple')
+    expect(exemple).toBe('## Outils\n- Toujours lancer les tests\n\n## Déploiement\n- Vercel\n\n```ts\nconst x = 1\n```\n')
   })
 
   test('un id inexistant donne null', () => {
@@ -590,6 +786,43 @@ describe('replaceUnit', () => {
   test('un texte qui commence par un tiret collé n\'est pas un marqueur', () => {
     const doc = '- old\n'
     expect(replaceUnit(doc, unit(doc, '- old').id, '-1 degré')).toBe('- -1 degré\n')
+  })
+
+  test('seuls « - », « * », « + » et « 1. » / « 1) », suivis d\'une espace, sont un marqueur dans le nouveau texte', () => {
+    const doc = '- old\n'
+    const id = unit(doc, '- old').id
+    expect(replaceUnit(doc, id, '+ new')).toBe('+ new\n')
+    expect(replaceUnit(doc, id, '1) new')).toBe('1) new\n')
+    expect(replaceUnit(doc, id, '10. new')).toBe('- 10. new\n')
+    expect(replaceUnit(doc, id, '2) new')).toBe('- 2) new\n')
+    expect(replaceUnit(doc, id, '2026.')).toBe('- 2026.\n')
+    expect(replaceUnit(doc, id, '1.')).toBe('- 1.\n')
+    expect(replaceUnit(doc, id, '-')).toBe('- -\n')
+    expect(replaceUnit(doc, id, '+1 pour ça')).toBe('- +1 pour ça\n')
+  })
+
+  test('puce dont le contenu commence par « 2026. » : le marqueur d\'origine est conservé', () => {
+    const doc = '- 2026. Release planned\n- other\n'
+    expect(replaceUnit(doc, unit(doc, '- 2026.').id, '2026. Release shipped')).toBe('- 2026. Release shipped\n- other\n')
+  })
+
+  test('aller-retour : remplacer une puce par son propre titre est l\'identité', () => {
+    const docs = [
+      '- 2026. Release planned\n- other\n',
+      '- 2026.\n',
+      '- 10) dix\n',
+      '* 2. deux\n',
+      '+ -1 degré\n',
+      '- 1.5 million\n',
+      '- +1 pour ça\n',
+      '- -\n',
+      '  - **gras** suite\n',
+    ]
+    for (const doc of docs) {
+      const u = parseUnits(doc).units[0]
+      expect(u?.kind).toBe('bullet')
+      expect(replaceUnit(doc, u?.id ?? '', u?.title ?? '')).toBe(doc)
+    }
   })
 
   test('une puce indentée de 1 à 3 espaces garde son indentation', () => {

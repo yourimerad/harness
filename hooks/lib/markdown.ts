@@ -6,6 +6,27 @@
 // Invariant du découpage : toute ligne non vide du corps (hors frontmatter) est soit un titre ATX,
 // soit contenue dans exactement une unité. Rien n'est donc invisible, et retirer toutes les unités
 // ne laisse que le frontmatter, des titres et des blancs.
+//
+// Écarts assumés par rapport à CommonMark (on découpe des fichiers de consignes, on ne les rend pas) :
+//  - Pas de continuation « paresseuse ». Une puce n'emporte que ses lignes indentées (au moins 2 espaces, ou une
+//    tabulation, au-delà de la colonne de son marqueur), les lignes vides suivies d'une telle ligne, et ses
+//    sous-puces. Une ligne non vide collée sans indentation sous une puce ouvre une nouvelle unité (paragraphe,
+//    puce, citation…) et n'est jamais la suite de la puce : retirer une puce n'emporte pas le texte voisin.
+//  - Un fence ouvert dans une puce meurt avec elle. Il ne reste ouvert que tant que les lignes sont indentées au
+//    retrait de contenu de la puce (ou vides, suivies d'une telle ligne) ; une ligne à la marge, même au milieu du
+//    code, ferme le fence et la puce. Un fence non fermé dans une puce ne court donc jamais sur les titres et les
+//    puces suivants. Seul un fence ouvert à la marge, non fermé, court jusqu'à la fin du fichier.
+//  - La règle « seul 1. interrompt un paragraphe » ne vaut que pour les paragraphes ; à la marge, tout marqueur
+//    de liste (`2026. ` compris) ouvre une puce.
+//
+// Limites connues et acceptées :
+//  - Les fins de ligne CRLF (et CR seul) sont normalisées en LF : removeUnit et replaceUnit renvoient un texte en LF.
+//  - removeUnit : les lignes blanches entre deux blocs (hors des unités) deviennent des lignes vides, leurs espaces
+//    et tabulations sont perdus ; les lignes à l'intérieur d'une unité sont conservées telles quelles.
+//  - Un `---` en toute première ligne s'apparie avec le prochain `---` comme frontmatter, même s'il s'agissait
+//    de deux lignes de séparation (comme le chargeur du moteur).
+//  - Un BOM UTF-8 en tête est ignoré à l'analyse (le frontmatter et un premier titre sont reconnus) et remis
+//    en tête du texte que renvoient removeUnit et replaceUnit.
 
 export type UnitKind = 'bullet' | 'paragraph' | 'import' | 'code' | 'table' | 'quote' | 'other'
 
@@ -47,11 +68,10 @@ const THEMATIC_BREAK = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/
 /** Marqueur de puce au plus à 3 espaces de la marge ; groupe 2 = numéro d'une liste ordonnée. */
 const LIST_ITEM = /^( {0,3})(?:[-*+]|(\d{1,9})[.)])(?:[ \t]|$)/
 const LIST_PREFIX = /^( {0,3}(?:[-*+]|\d{1,9}[.)]))(?:[ \t]+|$)/
-const LIST_MARKER_TEXT = /^(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/
+/** Marqueur que porte lui-même un nouveau texte (replaceUnit) : `- `, `* `, `+ `, `1. ` ou `1) `, jamais `2026. `. */
+const OWN_MARKER = /^(?:[-*+]|1[.)]) /
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/
 const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/
-/** Fermeture tolérante, pour un fence rencontré à l'intérieur d'une puce (indentation libre). */
-const FENCE_CLOSE_LOOSE = /^\s*(`{3,}|~{3,})[ \t]*$/
 const QUOTE = /^ {0,3}>/
 const TABLE_ROW = /^ {0,3}\|/
 const IMPORT = /^ {0,3}@\S+[ \t]*$/
@@ -75,17 +95,17 @@ function matchFence(line: string): Fence | null {
   return { ch: marker.charAt(0), len: marker.length }
 }
 
-function closesFence(line: string, fence: Fence, loose: boolean): boolean {
-  const m = (loose ? FENCE_CLOSE_LOOSE : FENCE_CLOSE).exec(line)
+function closesFence(line: string, fence: Fence): boolean {
+  const m = FENCE_CLOSE.exec(line)
   if (!m) return false
   const marker = m[1] ?? ''
   return marker.charAt(0) === fence.ch && marker.length >= fence.len
 }
 
-/** Index de la ligne fermant le fence ouvert avant `from`, ou -1. */
-function findFenceClose(lines: string[], from: number, fence: Fence, loose: boolean): number {
+/** Index de la ligne fermant le fence ouvert à la marge avant `from`, ou -1. */
+function findFenceClose(lines: string[], from: number, fence: Fence): number {
   for (let j = from; j < lines.length; j++) {
-    if (closesFence(lines[j] ?? '', fence, loose)) return j
+    if (closesFence(lines[j] ?? '', fence)) return j
   }
   return -1
 }
@@ -128,12 +148,11 @@ function indentWidth(line: string): number {
 }
 
 /**
- * La ligne `j` ouvre-t-elle un bloc à elle ?
- * `interruptsParagraph` : on est dans un paragraphe (règles CommonMark : seule une puce non vide,
- * ou « 1. », interrompt un paragraphe). Sinon on est dans une puce, où tout marqueur de liste
- * est un frère.
+ * La ligne `j` interrompt-elle un paragraphe en cours ? Un titre, un fence, une séparation, une citation,
+ * un tableau, un import ou un commentaire, oui ; une puce aussi, mais (règles CommonMark) seulement si elle
+ * n'est pas vide et, pour une liste ordonnée, numérotée 1 : « 2026. » en début de ligne reste dans le texte.
  */
-function startsBlock(lines: string[], j: number, interruptsParagraph: boolean): boolean {
+function interruptsParagraph(lines: string[], j: number): boolean {
   const l = lines[j] ?? ''
   if (HEADING.test(l)) return true
   if (matchFence(l)) return true
@@ -142,7 +161,6 @@ function startsBlock(lines: string[], j: number, interruptsParagraph: boolean): 
   if (commentEnd(lines, j) !== null) return true
   const li = LIST_ITEM.exec(l)
   if (li) {
-    if (!interruptsParagraph) return true
     if (BLANK.test(l.slice(li[0].length))) return false
     if (li[2] !== undefined && Number(li[2]) !== 1) return false
     return true
@@ -151,44 +169,33 @@ function startsBlock(lines: string[], j: number, interruptsParagraph: boolean): 
 }
 
 /**
+ * Une ligne non vide est-elle indentée « au-delà » d'un marqueur de puce posé à `base` espaces ?
+ * Oui avec au moins 2 espaces de plus que le marqueur, ou dès que son indentation contient une tabulation.
+ */
+function isIndentedBeyond(line: string, base: number): boolean {
+  return indentWidth(line) >= base + 2 || /^ *\t/.test(line)
+}
+
+/**
  * Fin (exclusive) d'une puce de premier niveau commençant à `start`, marqueur à `base` espaces.
- * Appartiennent à la puce : les lignes indentées d'au moins base+2 (ou une tabulation), y compris
- * après des lignes vides ; les sous-puces ; un fence ouvert dans la puce jusqu'à sa fermeture ;
- * et une ligne de texte collée sans indentation (continuation « paresseuse » de CommonMark).
+ * La puce possède ses lignes indentées (voir isIndentedBeyond), y compris après des lignes vides : sous-puces,
+ * suite de texte et fence qu'elle ouvre y sont donc compris, sans qu'on analyse leur contenu. Toute autre ligne
+ * non vide, même collée, commence une nouvelle unité : pas de continuation paresseuse, et un fence ouvert dans
+ * la puce (même non fermé) s'arrête avec elle.
  */
 function scanBullet(lines: string[], start: number, base: number): number {
   const n = lines.length
   let end = start + 1
   let j = start + 1
-  let afterFence = false
   while (j < n) {
-    let line = lines[j] ?? ''
-    if (BLANK.test(line)) {
+    if (BLANK.test(lines[j] ?? '')) {
+      // Des lignes vides ne prolongent la puce que si une ligne indentée les suit.
       let k = j + 1
       while (k < n && BLANK.test(lines[k] ?? '')) k++
-      if (k >= n || indentWidth(lines[k] ?? '') < base + 2) break
+      if (k >= n || !isIndentedBeyond(lines[k] ?? '', base)) break
       j = k
-      line = lines[k] ?? ''
     }
-    if (indentWidth(line) >= base + 2) {
-      const fence = matchFence(line.trimStart())
-      if (fence) {
-        const close = findFenceClose(lines, j + 1, fence, true)
-        if (close !== -1) {
-          end = close + 1
-          j = close + 1
-          afterFence = true
-          continue
-        }
-      }
-      end = j + 1
-      j += 1
-      afterFence = false
-      continue
-    }
-    if (startsBlock(lines, j, false)) break
-    // Texte non indenté collé à la puce : continuation paresseuse, sauf juste après un bloc de code fermé.
-    if (afterFence) break
+    if (!isIndentedBeyond(lines[j] ?? '', base)) break
     end = j + 1
     j += 1
   }
@@ -233,6 +240,8 @@ function normalizeForId(text: string): string {
 // ---------------------------------------------------------------------------
 
 type Analysis = {
+  /** `\uFEFF` si le source commençait par un BOM UTF-8 (retiré avant l'analyse), sinon ''. */
+  bom: string
   lines: string[]
   endsWithNewline: boolean
   /** Index de la première ligne après le frontmatter (0 s'il n'y en a pas). */
@@ -243,7 +252,9 @@ type Analysis = {
 }
 
 function analyze(source: string): Analysis {
-  const normalized = source.replace(/\r\n?/g, '\n')
+  // Un BOM en tête cacherait le `---` du frontmatter ou le `#` d'un premier titre : on le met de côté.
+  const bom = source.startsWith('\uFEFF') ? '\uFEFF' : ''
+  const normalized = source.slice(bom.length).replace(/\r\n?/g, '\n')
   const lines = normalized.split('\n')
   const n = lines.length
 
@@ -305,7 +316,7 @@ function analyze(source: string): Analysis {
     // Bloc de code clôturé : opaque, rien n'y est analysé. Non fermé : jusqu'à la fin du fichier.
     const fence = matchFence(line)
     if (fence) {
-      const close = findFenceClose(lines, i + 1, fence, false)
+      const close = findFenceClose(lines, i + 1, fence)
       let end = close === -1 ? n : close + 1
       while (end > i + 1 && BLANK.test(lines[end - 1] ?? '')) end -= 1
       push('code', i, end)
@@ -360,12 +371,12 @@ function analyze(source: string): Analysis {
 
     // Paragraphe : lignes non vides consécutives, jusqu'à une ligne vide ou un autre bloc.
     let j = i + 1
-    while (j < n && !BLANK.test(lines[j] ?? '') && !startsBlock(lines, j, true)) j += 1
+    while (j < n && !BLANK.test(lines[j] ?? '') && !interruptsParagraph(lines, j)) j += 1
     push('paragraph', i, j)
     i = j
   }
 
-  return { lines, endsWithNewline: normalized.endsWith('\n'), bodyStart, frontmatter, headings, units }
+  return { bom, lines, endsWithNewline: normalized.endsWith('\n'), bodyStart, frontmatter, headings, units }
 }
 
 // ---------------------------------------------------------------------------
@@ -389,14 +400,15 @@ function subtreeEnd(headings: Heading[], hi: number, lineCount: number): number 
 }
 
 /**
- * Retire l'unité ; retire aussi tout titre dont le sous-arbre contenait l'unité et n'a plus d'unité ;
+ * Retire l'unité ; retire aussi tout titre dont le sous-arbre contenait l'unité et n'a plus d'unité,
+ * avec ses sous-titres (restés sans unité, ils remonteraient orphelins sous le titre suivant) ;
  * normalise les blancs autour des retraits (≤ 1 ligne vide consécutive, pas de blancs de fin,
  * saut de ligne final conservé s'il y en avait un). Le reste du fichier n'est pas touché, et les
  * lignes vides à l'intérieur d'une unité (bloc de code, puce aérée) ne sont jamais modifiées.
  * Le résultat est relu : si le retrait faisait fusionner deux unités voisines (deux paragraphes collés
  * de part et d'autre d'un bloc de code, un `---` devenu première ligne…), une ligne vide est ajoutée à la jonction.
  * `text: null` quand il ne reste aucune unité (que du frontmatter, des titres, des blancs) : le fichier est à supprimer.
- * Les sauts de ligne `\r\n` sont normalisés en `\n`.
+ * Les sauts de ligne `\r\n` sont normalisés en `\n` ; un BOM UTF-8 en tête est remis en tête du texte retourné.
  */
 export function removeUnit(text: string, unitId: string): { text: string | null; removed: Unit } | null {
   const a = analyze(text)
@@ -410,11 +422,20 @@ export function removeUnit(text: string, unitId: string): { text: string | null;
   for (let l = removed.start; l < removed.end; l++) dropped.add(l)
 
   // Titres devenus vides à cause de ce retrait (en cascade : le test porte sur les unités, pas sur les titres).
+  const emptied: { line: number; stop: number }[] = []
   a.headings.forEach((h, hi) => {
     const stop = subtreeEnd(a.headings, hi, n)
     if (removed.start <= h.line || removed.start >= stop) return
-    if (!remaining.some(u => u.start > h.line && u.start < stop)) dropped.add(h.line)
+    if (!remaining.some(u => u.start > h.line && u.start < stop)) {
+      dropped.add(h.line)
+      emptied.push({ line: h.line, stop })
+    }
   })
+  // Un titre retiré emporte ses sous-titres : son sous-arbre n'a plus d'unité, ils sont donc vides eux aussi.
+  // Un titre déjà vide qui n'est dans le sous-arbre d'aucun titre retiré n'est, lui, pas touché.
+  for (const h of a.headings) {
+    if (emptied.some(e => h.line > e.line && h.line < e.stop)) dropped.add(h.line)
+  }
 
   // Lignes qui ne sont ni du frontmatter, ni un titre, ni dans une unité : les blancs entre blocs.
   const owned = new Array<boolean>(n).fill(false)
@@ -469,14 +490,17 @@ export function removeUnit(text: string, unitId: string): { text: string | null;
   // Si rien ne préserve les unités (cas dégénéré), on garde le diff minimal : aucun texte n'est perdu.
   const result = candidates.find(sameUnits) ?? tight
 
-  return { text: result, removed }
+  return { text: a.bom + result, removed }
 }
 
 /**
  * Remplace le texte d'une unité mono-ligne. Pour une puce, le marqueur d'origine (et son indentation)
- * est conservé si `newText` n'en porte pas ; s'il en porte un (`- `, `* `, `+ `, `1. `), il n'est pas doublé.
+ * est conservé si `newText` n'en porte pas ; s'il en porte un, il n'est pas doublé. `newText` porte son
+ * propre marqueur seulement s'il commence par `- `, `* `, `+ `, `1. ` ou `1) ` : « 2026. », « 10) » ou « -1 »
+ * sont du texte (ainsi remplacer une puce par son propre titre ne la change pas).
  * Retourne null si l'unité est inconnue, si elle n'est pas mono-ligne, ou si `newText` est vide
- * ou contient un saut de ligne (pour retirer, voir `removeUnit`). Les `\r\n` sont normalisés en `\n`.
+ * ou contient un saut de ligne (pour retirer, voir `removeUnit`). Les `\r\n` sont normalisés en `\n` ;
+ * un BOM UTF-8 en tête est remis en tête du texte retourné.
  */
 export function replaceUnit(text: string, unitId: string, newText: string): string | null {
   const a = analyze(text)
@@ -490,7 +514,7 @@ export function replaceUnit(text: string, unitId: string, newText: string): stri
   let replacement = body
   if (unit.kind === 'bullet') {
     const indent = /^ */.exec(old)?.[0] ?? ''
-    if (LIST_MARKER_TEXT.test(body)) {
+    if (OWN_MARKER.test(body)) {
       replacement = indent + body
     } else {
       const prefix = LIST_PREFIX.exec(old)?.[0] ?? '- '
@@ -500,5 +524,5 @@ export function replaceUnit(text: string, unitId: string, newText: string): stri
 
   const lines = a.lines.slice()
   lines[unit.start] = replacement
-  return lines.join('\n')
+  return a.bom + lines.join('\n')
 }
