@@ -92,6 +92,9 @@ test('session.start construit l’inventaire et la status line ; le pane se dess
     await drawn.press({ key: 'sel:engine' })
     expect(await drawn.find({ key: 'sel:engine/section/intro' })).toBeDefined()
     await drawn.press({ key: 'sel:engine' })
+    // l'état est celui de la session : on replie le fichier pour la surface suivante
+    await drawn.press({ key: CLAUDE_KEY })
+    expect(await drawn.find({ type: 'Button', text: /Locale française/ })).toBeUndefined()
     await drawn.unmount()
   }
 })

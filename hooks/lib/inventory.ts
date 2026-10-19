@@ -113,7 +113,8 @@ const fileItem = (
       vanilla: false,
       source,
       disable: { kind: 'remove-unit', path, unitId: u.id },
-      edit: u.isSingleLine ? 'inline' : 'prompt',
+      // l'édition in-pane ne vaut que pour une puce ou un paragraphe d'une ligne : ailleurs elle fusionnerait des voisins
+      edit: u.isSingleLine && (u.kind === 'bullet' || u.kind === 'paragraph') ? 'inline' : 'prompt',
       badges: [u.kind, ...(u.headingPath.length ? [u.headingPath.join(' › ')] : [])],
     }),
   )
