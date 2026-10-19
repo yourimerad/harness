@@ -2,7 +2,19 @@
 
 Un plugin Claude Code qui montre **tout ce qui entre dans le contexte** d'une session, et permet de retirer ou d'éditer le non-vanilla **à la source**.
 
-`/harness` ouvre le pane « Harnais » : à gauche l'arbre par source, dans l'ordre où le modèle les reçoit ; à droite le texte exact, le fichier d'origine, le poids approximatif en tokens, et les boutons **Désactiver** / **Modifier**. La status line affiche en permanence `harness: N instr · ≈T tok`.
+`/harness` ouvre le pane « Harnais » sur un **Résumé** : une ligne par source avec sa barre de poids, ses tokens et son compte non-vanilla ; un clic ouvre la vue correspondante. Les vues, en barre (touches 1 à 7 quand le pane a le focus, ou `/harness journal`, `/harness 3`, `/harness régl`…) :
+
+| Vue | Contenu |
+|---|---|
+| Résumé | poids et comptes par source, état de la capture, relecture du disque |
+| Instructions | CLAUDE.md, règles, mémoire |
+| Réglages | settings.json, hooks, plugins |
+| Skills | skills, commandes, agents |
+| MCP & outils | serveurs MCP, outils et commandes (lecture seule) |
+| Moteur | sections vanilla, blocs du premier message, reminders observés |
+| Journal | la fin de `journal.md`, en markdown |
+
+Dans une vue : à gauche l'arbre des groupes concernés, dans l'ordre où le modèle les reçoit ; à droite le texte exact, le fichier d'origine, le poids en tokens, et les boutons **Désactiver** / **Modifier**. Dans un pane étroit (terminal sur l'écran principal), l'arbre et le détail s'empilent. La status line affiche en permanence `harness: N instr · ≈T tok`.
 
 ## Ce qu'il voit
 

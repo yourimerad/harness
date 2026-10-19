@@ -96,6 +96,17 @@ const loose = (text: string) =>
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
+/** Caractères de journal gardés pour le pane. */
+const JOURNAL_TAIL = 6000
+
+/** La fin d'un journal, coupée au début d'une entrée (`## …`) quand elle dépasse `max` caractères ; l'en-tête saute alors. */
+export const journalTail = (text: string, max: number): string => {
+  if (text.length <= max) return text
+  const tail = text.slice(text.length - max)
+  const at = tail.indexOf('\n## ')
+  return at >= 0 ? tail.slice(at + 1) : tail
+}
+
 /** Un serveur MCP tel que les noms d'outils l'épellent (`plugin:x:gmail` → `plugin_x_gmail`, `claude.ai Gmail` → `claude_ai_Gmail`). */
 export const mcpKey = (server: string) => server.replace(/[^A-Za-z0-9_-]/g, '_')
 
@@ -730,6 +741,10 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
     }))
   }
 
+  // --- journal du mod : sa fin, par entrées entières ; le pane l'affiche dans la vue Journal
+  const journalText = await r.text(`${env.home}/.claude/harness/journal.md`)
+  const journal = journalText === null ? null : journalTail(journalText, JOURNAL_TAIL)
+
   const groups: Item[] = [
     groupItem('engine', 'Moteur (vanilla)', engine, true),
     groupItem('app', 'App et plugins intégrés (vanilla)', app, true),
@@ -752,5 +767,6 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
     count: nonVanilla.length,
     tokens: nonVanilla.reduce((n, i) => n + i.tokens, 0) + surfaceTokens,
     observedClaudeMd,
+    journal,
   }
 }

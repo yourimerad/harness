@@ -8,7 +8,7 @@ Plugin Claude Code (mod à hooks fonctionnels) qui rend visible 100 % de ce qui 
 2. **Tout à la source.** Désactiver = supprimer du fichier d'origine. Modifier = écrire dans le fichier. Pas d'ombre, pas d'overlay.
 3. **Journal, pas de corbeille.** Chaque action est consignée dans `~/.claude/harness/journal.md` (append-only, lisible). Aucune restauration.
 4. **Vanilla** = ce qu'une session recevrait avec un `~/.claude` vide dans cette app : prose du moteur (sections à id nu), prose des plugins intégrés (id `<plugin>:<nom>` dont le plugin n'est pas installé par l'utilisateur), reminders d'origine `engine`. **Non-vanilla** = tout ce qui est traçable à la config de l'utilisateur, claude.ai inclus, le mod lui-même inclus.
-5. **UI** : `/harness` ouvre le pane « Harnais » ; status line `harness: N instr · ≈T tok`. Arbre gauche par source dans l'ordre de réception, vanilla replié ; nœud « Surface » (outils, commandes) en lecture seule. Détail droit : texte, chemin, poids, badges, boutons Désactiver / Modifier.
+5. **UI** : `/harness [vue]` ouvre le pane « Harnais » ; status line `harness: N instr · ≈T tok`. Une barre de vues (touches 1-7 quand le pane a le focus) : **Résumé** (une ligne par groupe : barre de poids, tokens, compte non-vanilla ; un clic ouvre la vue du groupe, déplié), **Instructions** (CLAUDE.md, règles, mémoire), **Réglages** (settings, hooks, plugins), **Skills** (skills, commandes, agents), **MCP & outils** (serveurs MCP, surface), **Moteur** (vanilla, reminders), **Journal** (fin de `journal.md` en markdown). Dans une vue : arbre gauche des groupes concernés dans l'ordre de réception, vanilla replié ; détail droit : texte, chemin, poids, badges, boutons Désactiver / Modifier. Sous 80 colonnes (pane inline du terminal), l'arbre et le détail s'empilent. Changer de vue vide la sélection ; les dépliages restent.
 6. **Modifier** : unité mono-ligne → `Input` in-pane, write-through. Multi-ligne → `$.prompt.fill` pré-remplit le composer (« Modifie dans `<fichier>` le bloc “<titre>” : »), jamais de `prompt.submit`.
 7. **Périmètre d'écriture directe** : markdown observés (CLAUDE.md / AGENTS.md / rules / memory), `~/.claude/settings.json` (+ `.claude/settings.json` et `.local.json` du projet), `~/.claude/skills/` (déplacement vers `~/.claude/skills.disabled/`). Jamais `plugins/cache/`, `plugins/synced/`, ni la source d'un plugin. Hook de plugin → désactivation du plugin entier (`enabledPlugins`). claude.ai → pointeur.
 8. **Confirmation** : un clic agit ; seule la suppression d'un fichier entier demande un second clic (« Confirmer »).
@@ -44,6 +44,8 @@ type Item = {
   children?: Item[]     // unités d'un fichier, entrées d'un hook…
 }
 ```
+
+`HarnessUi.view` porte la vue affichée (`overview` au départ) ; `HarnessInventory.journal` la fin du journal (6 000 caractères, par entrées entières). Contrat complet : `types/index.d.ts`.
 
 ## Contrats des modules purs
 

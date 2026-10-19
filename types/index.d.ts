@@ -59,6 +59,9 @@ export type HarnessItem = {
   children?: HarnessItem[]
 }
 
+/** Les vues du pane : le résumé, puis une par famille de groupes, puis le journal. */
+export type HarnessView = 'overview' | 'instructions' | 'config' | 'skills' | 'mcp' | 'engine' | 'journal'
+
 export type HarnessInventory = {
   /** Horodatage ISO de la construction. */
   builtAt: string
@@ -72,9 +75,13 @@ export type HarnessInventory = {
   tokens: number
   /** Vrai quand la chaîne CLAUDE.md vient de `prompt.context` et non d'une reconstruction disque. */
   observedClaudeMd: boolean
+  /** Fin du journal des actions (`~/.claude/harness/journal.md`), par entrées entières ; null sans journal. */
+  journal: string | null
 }
 
 export type HarnessUi = {
+  /** Vue affichée dans le pane. */
+  view: HarnessView
   /** Identifiant de l'élément sélectionné dans l'arbre, ou null. */
   selected: string | null
   /** Groupes et nœuds dépliés, par identifiant. */

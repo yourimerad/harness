@@ -8,13 +8,13 @@ import type { HarnessInventory, HarnessItem, HarnessSnapshot, HarnessUi } from '
 import { fillPromptForEdit, runDisable, runInlineEdit, type ActionEnv, type ActionIo, type ActionResult, type Invalidation } from './lib/actions'
 import { buildInventory, type InventoryIo } from './lib/inventory'
 import { formatTokens } from './lib/tokens'
-import { findItem, renderPane, type PaneModel } from './pane'
+import { VIEWS, findItem, renderPane, viewFromArg, type PaneModel } from './pane'
 
 const PANE = 'harness'
 const WATCH_MS = 5000
 
 const emptySnapshot = (): HarnessSnapshot => ({ at: '', sections: [], outputStyle: null, blocks: [], instructionFiles: [], attachments: [], skillPrompts: [] })
-const emptyUi = (): HarnessUi => ({ selected: null, expanded: { claudeMd: true }, confirming: null, editing: null, pending: [], changedOutside: [], notice: null })
+const emptyUi = (): HarnessUi => ({ view: 'overview', selected: null, expanded: { claudeMd: true }, confirming: null, editing: null, pending: [], changedOutside: [], notice: null })
 
 const snapshotAtom = atom({ plugin: 'harness', key: 'snapshot' } as const, null)
 const inventoryAtom = atom({ plugin: 'harness', key: 'inventory' } as const, null)
@@ -251,7 +251,7 @@ const editViaPrompt = async ($: EngineInterface, item: HarnessItem) => {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await ensureEnv($)
-    await $.command.register({ name: 'harness', description: 'Harnais : tout ce qui entre dans le contexte, et où le couper à la source', immediate: true })
+    await $.command.register({ name: 'harness', description: 'Harnais : tout ce qui entre dans le contexte, et où le couper à la source', argumentHint: '[résumé|instructions|réglages|skills|mcp|moteur|journal]', immediate: true })
     const started = await next(e)
     await captureNow($)
     await rebuild($, 'session.start')
@@ -319,10 +319,13 @@ export const register: Register = on => {
     return result
   })
 
-  on('command.run', { command: 'harness' }, async $ => {
+  on('command.run', { command: 'harness' }, async ($, e) => {
+    const view = viewFromArg(e.args)
+    if (view) await update($, uiAtom, u => ({ ...u, view, selected: null, editing: null, confirming: null }))
     await $.ui.open({ id: PANE, title: 'Harnais', focus: true, columns: 120 })
     void rebuild($, '/harness')
-    return { text: 'Pane Harnais ouvert.' }
+    const label = VIEWS.find(v => v.id === view)?.label
+    return { text: label ? `Pane Harnais ouvert, vue ${label}.` : 'Pane Harnais ouvert.' }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -336,6 +339,7 @@ export const register: Register = on => {
     }
     const model: PaneModel = { inventory: await read($, inventoryAtom), snapshot: await read($, snapshotAtom), ui: await read($, uiAtom), home: env.home }
     return renderPane($.ui.resolve(e), e, model, {
+      setView: (view, group) => void update($, uiAtom, u => ({ ...u, view, selected: null, editing: null, confirming: null, expanded: group ? { ...u.expanded, [group]: true } : u.expanded })),
       select: id => void update($, uiAtom, u => ({ ...u, selected: id, confirming: u.confirming === id ? u.confirming : null, editing: null })),
       toggle: id => void update($, uiAtom, u => ({ ...u, expanded: { ...u.expanded, [id]: !u.expanded[id] } })),
       startEdit: id => void update($, uiAtom, u => ({ ...u, editing: id, confirming: null })),

@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { HarnessItem as Item, HarnessSnapshot as Snapshot } from '../types'
-import { buildInventory, discoverPlugins } from '../hooks/lib/inventory'
+import { buildInventory, discoverPlugins, journalTail } from '../hooks/lib/inventory'
+import { viewFromArg } from '../hooks/pane'
 import { estimateTokens } from '../hooks/lib/tokens'
 import { BREAKDOWN, CWD, DIRS, FILES, HCC, HOME, MEM, SNAP, env, io } from './fixtures'
 
@@ -308,5 +309,38 @@ describe('buildInventory : mesure /context', () => {
     expect(group(inv, 'app').children!.some(i => i.id === 'app/system-prompt-rest')).toBe(false)
     expect(group(inv, 'skills').children!.some(i => i.id.startsWith('skills/agent/'))).toBe(false)
     expect(group(inv, 'surface').children!.find(i => i.id === 'surface/tools/mcp:vercel')!.badges).toEqual(['différés (noms seuls)'])
+  })
+})
+
+describe('journal', () => {
+  const entry = (n: number) => `## 2026-10-19T10:0${n}:00.000Z · remove-unit · /x\n\n**Avant**\n\n\`\`\`\n- puce ${n}\n\`\`\`\n`
+  const text = `# Journal harness\n\nintro.\n\n${entry(1)}\n${entry(2)}\n${entry(3)}`
+
+  test('journalTail : court → entier ; long → coupé au début d’une entrée, l’en-tête sauté', () => {
+    expect(journalTail(text, 10_000)).toBe(text)
+    const tail = journalTail(text, entry(3).length + entry(2).length + 10)
+    expect(tail.startsWith('## 2026-10-19T10:02')).toBe(true)
+    expect(tail).toContain('puce 3')
+    expect(tail).not.toContain('intro.')
+  })
+
+  test('l’inventaire porte la fin du journal, surveillée ; null sans journal', async () => {
+    const files = { ...FILES, [`${HOME}/.claude/harness/journal.md`]: text }
+    const inv = await buildInventory(io(files), SNAP, env)
+    expect(inv.journal).toBe(text)
+    expect(inv.watched).toContain(`${HOME}/.claude/harness/journal.md`)
+    expect((await buildInventory(io(), SNAP, env)).journal).toBeNull()
+  })
+})
+
+describe('vues du pane', () => {
+  test('viewFromArg : id, touche, libellé abrégé sans accent ; vide ou inconnu → null', () => {
+    expect(viewFromArg('journal')).toBe('journal')
+    expect(viewFromArg(' 3 ')).toBe('config')
+    expect(viewFromArg('Régl')).toBe('config')
+    expect(viewFromArg('regl')).toBe('config')
+    expect(viewFromArg('mcp')).toBe('mcp')
+    expect(viewFromArg('')).toBeNull()
+    expect(viewFromArg('zzz')).toBeNull()
   })
 })

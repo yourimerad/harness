@@ -70,7 +70,7 @@ const EXPORT = `${HOME}/.claude/harness/inventory.json`
 
 const CLAUDE_KEY = `sel:claudeMd/${HOME}/.claude/CLAUDE.md`
 
-test('session.start construit l’inventaire et la status line ; le pane se dessine et navigue sur chaque surface', async ($, on) => {
+test('session.start construit l’inventaire et la status line ; le pane s’ouvre sur le résumé et navigue par vues sur chaque surface', async ($, on) => {
   const files = { ...FILES }
   const { status } = wire(on, files, { ...DIRS })
   await $.session.start({ cwd: CWD, surface: 'desktop', isInteractive: true })
@@ -80,9 +80,16 @@ test('session.start construit l’inventaire et la status line ; le pane se dess
     const drawn = await $.ui.mount({ ...PANE, surface })
     expect(await drawn.find({ type: 'Text', text: /Harnais/ })).toBeDefined()
     expect(await drawn.find({ type: 'Text', text: /instructions non-vanilla/ })).toBeDefined()
-    // CLAUDE.md est déplié d'office ; le moteur est replié
+    // la barre de vues, puis le résumé : une ligne par groupe, rien de l'arbre
+    for (const v of ['overview', 'instructions', 'config', 'skills', 'mcp', 'engine', 'journal']) expect(await drawn.find({ key: `view:${v}` })).toBeDefined()
+    expect(await drawn.find({ key: 'go:claudeMd' })).toBeDefined()
+    expect(await drawn.find({ key: 'go:surface' })).toBeDefined()
+    expect(await drawn.find({ key: CLAUDE_KEY })).toBeUndefined()
+    // une ligne du résumé ouvre la vue qui porte le groupe, déplié
+    await drawn.press({ key: 'go:claudeMd' })
+    expect(await drawn.find({ type: 'Text', text: /CLAUDE.md, règles et mémoire/ })).toBeDefined()
     expect(await drawn.find({ key: CLAUDE_KEY })).toBeDefined()
-    expect(await drawn.find({ key: 'sel:engine/section/intro' })).toBeUndefined()
+    expect(await drawn.find({ key: 'sel:engine' })).toBeUndefined()
     expect(await drawn.find({ type: 'Button', text: /Locale française/ })).toBeUndefined()
     // un clic sur le fichier le déplie, le sélectionne, et offre la suppression du fichier
     await drawn.press({ key: CLAUDE_KEY })
@@ -92,13 +99,20 @@ test('session.start construit l’inventaire et la status line ; le pane se dess
     await drawn.press({ key: CLAUDE_KEY.replace('sel:', 'disable:') })
     expect((await drawn.find({ key: CLAUDE_KEY.replace('sel:', 'disable:') }))?.text).toContain('Confirmer')
     expect(files[`${HOME}/.claude/CLAUDE.md`]).toContain('Locale française')
-    // le moteur se déplie à la demande
+    // la vue Moteur : le groupe replié, qui se déplie à la demande ; la sélection ne suit pas d'une vue à l'autre
+    await drawn.press({ key: 'view:engine' })
+    expect(await drawn.find({ key: 'sel:engine' })).toBeDefined()
+    expect(await drawn.find({ key: 'sel:engine/section/intro' })).toBeUndefined()
+    expect(await drawn.find({ key: CLAUDE_KEY })).toBeUndefined()
     await drawn.press({ key: 'sel:engine' })
     expect(await drawn.find({ key: 'sel:engine/section/intro' })).toBeDefined()
     await drawn.press({ key: 'sel:engine' })
-    // l'état est celui de la session : on replie le fichier pour la surface suivante
+    // retour aux instructions : l'état est celui de la session, on replie le fichier pour la surface suivante
+    await drawn.press({ key: 'view:instructions' })
+    expect(await drawn.find({ type: 'Button', text: /Locale française/ })).toBeDefined()
     await drawn.press({ key: CLAUDE_KEY })
     expect(await drawn.find({ type: 'Button', text: /Locale française/ })).toBeUndefined()
+    await drawn.press({ key: 'view:overview' })
     await drawn.unmount()
   }
 })
@@ -108,6 +122,7 @@ test('désactiver une puce écrit le fichier sans elle, journalise, invalide pro
   const { invalidated } = wire(on, files, { ...DIRS })
   await $.session.start({ cwd: CWD, surface: 'desktop', isInteractive: true })
   const drawn = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await drawn.press({ key: 'view:instructions' })
   await drawn.press({ key: CLAUDE_KEY })
   const unit = await drawn.find({ type: 'Button', text: /Locale française/ })
   expect(unit?.key).toBeDefined()
@@ -122,6 +137,11 @@ test('désactiver une puce écrit le fichier sans elle, journalise, invalide pro
   expect(files[`${HOME}/.claude/harness/journal.md`]).toContain('Locale française.')
   expect(invalidated).toContain('prompt.context')
   expect(await drawn.find({ type: 'Text', text: /en attente du prochain tour|Retiré de/ })).toBeDefined()
+  // la vue Journal montre l'action qui vient d'être consignée
+  await drawn.press({ key: 'view:journal' })
+  expect(await drawn.find({ type: 'Markdown', text: /remove-unit/ })).toBeDefined()
+  expect(await drawn.find({ type: 'Markdown', text: /Locale française/ })).toBeDefined()
+  await drawn.press({ key: 'view:overview' })
   await drawn.unmount()
 })
 
@@ -130,6 +150,7 @@ test('éditer une puce in-pane remplace la ligne à la source', async ($, on) =>
   wire(on, files, { ...DIRS })
   await $.session.start({ cwd: CWD, surface: 'desktop', isInteractive: true })
   const drawn = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await drawn.press({ key: 'view:instructions' })
   await drawn.press({ key: CLAUDE_KEY })
   const unit = await drawn.find({ type: 'Button', text: /Stack TypeScript/ })
   await drawn.press({ key: unit!.key! })
@@ -137,7 +158,35 @@ test('éditer une puce in-pane remplace la ligne à la source', async ($, on) =>
   await drawn.input({ key: unit!.key!.replace('sel:', 'input:'), text: 'Stack TypeScript et pnpm.' })
   expect(files[`${HOME}/.claude/CLAUDE.md`]).toContain('- Stack TypeScript et pnpm.\n')
   expect(files[`${HOME}/.claude/CLAUDE.md`]).not.toContain('- Stack TypeScript.\n')
+  await drawn.press({ key: 'view:overview' })
   await drawn.unmount()
+})
+
+test('chaque vue se dessine, large et étroite : réglages, skills, MCP & outils, journal vide', async ($, on) => {
+  wire(on, { ...FILES }, { ...DIRS })
+  await $.session.start({ cwd: CWD, surface: 'desktop', isInteractive: true })
+  for (const bodyColumns of [120, 60]) {
+    const drawn = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns }, surface: 'terminal' })
+    await drawn.press({ key: 'view:config' })
+    expect(await drawn.find({ key: 'sel:settings' })).toBeDefined()
+    expect(await drawn.find({ key: 'sel:hooks' })).toBeDefined()
+    expect(await drawn.find({ key: 'sel:plugins' })).toBeDefined()
+    expect(await drawn.find({ key: 'sel:claudeMd' })).toBeUndefined()
+    await drawn.press({ key: 'sel:settings' })
+    expect(await drawn.find({ key: 'sel:settings/user/model' })).toBeDefined()
+    await drawn.press({ key: 'sel:settings/user/model' })
+    expect(await drawn.find({ key: 'edit:settings/user/model' })).toBeDefined()
+    await drawn.press({ key: 'sel:settings' })
+    await drawn.press({ key: 'view:skills' })
+    expect(await drawn.find({ key: 'sel:skills' })).toBeDefined()
+    await drawn.press({ key: 'view:mcp' })
+    expect(await drawn.find({ key: 'sel:mcp' })).toBeDefined()
+    expect(await drawn.find({ key: 'sel:surface' })).toBeDefined()
+    await drawn.press({ key: 'view:journal' })
+    expect(await drawn.find({ type: 'Markdown', text: /aucune action/ })).toBeDefined()
+    await drawn.press({ key: 'view:overview' })
+    await drawn.unmount()
+  }
 })
 
 test('sur mobile, le pane renvoie un message au lieu de l’arbre', async ($, on) => {
