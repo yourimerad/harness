@@ -112,7 +112,9 @@ export function toolProvider(name: string): { kind: 'engine' | 'mcp'; server?: s
 ## Flux
 
 - `session.start` : enregistre `/harness`, lit settings + disque, appelle `$.prompt.compose()`, écrit le snapshot, met à jour la status line.
-- `prompt.compose` / `prompt.context` / `prompt.attachment` / `skill.prompt` : `next(e)` intact, copie du résultat dans le snapshot.
-- `turn.start` : vide la liste des reminders du tour.
+- `prompt.compose` / `prompt.context` / `prompt.attachment` / `skill.prompt` : `next(e)` intact, copie du résultat dans le snapshot, marque « capture arrivée ». Les attachments sont gardés dédoublonnés (type + texte), le moteur ne les redemandant qu'une fois par processus.
+- Veille (`$.clock.every`, 5 s) : reconstruit si une capture est arrivée (l'export suit le premier message sans attendre la fin du tour) ; pane affiché, relit aussi le disque quand un mtime bouge.
+- `turn.complete` : reconstruit, vide les attentes.
 - `ui.render` Pane `harness` : construit l'arbre depuis le snapshot + lectures disque + ventilation /context, mis en cache dans `$.state`.
+- Export `~/.claude/harness/inventory.json` à chaque reconstruction : un seul fichier par `~/.claude`, la dernière session qui reconstruit l'emporte (`sessionId`, `cwd` disent laquelle).
 - Actions : écriture fichier → journal → `$.ui.invalidate('prompt.context' | 'prompt.section' | 'prompt.compose')` → relecture → toast.

@@ -16,7 +16,7 @@ const PANE = {
 /** Branche les nouns que le mod appelle sur un disque en mémoire et des réponses fixes. */
 const wire = (on: On, files: Record<string, string>, dirs: Record<string, string[]>) => {
   mock.env(on, { HOME })
-  mock.clock(on, { now: 1_760_000_000_000 })
+  const clock = mock.clock(on, { now: 1_760_000_000_000 })
   const runs: string[][] = []
   const invalidated: string[] = []
   const status: Array<string | undefined> = []
@@ -40,9 +40,11 @@ const wire = (on: On, files: Record<string, string>, dirs: Record<string, string
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: CWD }))
   on('session.root', () => ({ value: CWD }))
+  on('session.id', () => ({ value: 'sess-1' }))
   on('command.list', async () => ({ value: [...(await fixtures().commands())] }))
   on('tool.list', async () => ({ value: [...(await fixtures().tools())] }))
   on('prompt.compose', () => ({ sections: SNAP.sections }))
+  on('prompt.context', ($, e) => ({ blocks: e.blocks, instructionFiles: e.instructionFiles }))
   on('command.register', () => ({ value: {} }) as never)
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
   on('ui.status', ($, e) => {
@@ -61,8 +63,10 @@ const wire = (on: On, files: Record<string, string>, dirs: Record<string, string
     if (e.argv[0] === 'rm') delete files[e.argv[2] ?? '']
     return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  return { runs, invalidated, status }
+  return { runs, invalidated, status, clock }
 }
+
+const EXPORT = `${HOME}/.claude/harness/inventory.json`
 
 const CLAUDE_KEY = `sel:claudeMd/${HOME}/.claude/CLAUDE.md`
 
@@ -141,4 +145,21 @@ test('sur mobile, le pane renvoie un message au lieu de l’arbre', async ($, on
   const drawn = await $.ui.mount({ ...PANE, surface: 'mobile' })
   expect(await drawn.find({ type: 'Text', text: /bureau/ })).toBeDefined()
   await drawn.unmount()
+})
+
+test('l’export nomme la session ; une capture (prompt.context) reconstruit au tick suivant, sans attendre la fin du tour', async ($, on) => {
+  const files = { ...FILES }
+  const { clock } = wire(on, files, { ...DIRS })
+  await $.session.start({ cwd: CWD, surface: 'desktop', isInteractive: true })
+  const first = JSON.parse(files[EXPORT]!) as { sessionId: string; cwd: string; blocks: unknown[]; instructionFiles: unknown[] }
+  expect(first.sessionId).toBe('sess-1')
+  expect(first.cwd).toBe(CWD)
+  expect(first.blocks).toEqual([])
+  // le premier message arrive : blocs et fichiers d'instructions observés
+  await $.prompt.context({ blocks: [{ name: 'claudeMd', text: 'framed' }, { name: 'userEmail', text: 'y@y' }], instructionFiles: [{ path: `${HOME}/.claude/CLAUDE.md`, kind: 'user', content: '# Contexte\n\n## Machine\n- Locale française.\n- Secrets via `$VAR`.\n\n## Code\n- Stack TypeScript.\n' }] })
+  await clock.advance(5_000)
+  const second = JSON.parse(files[EXPORT]!) as { observedClaudeMd: boolean; blocks: { name: string }[]; instructionFiles: { path: string }[] }
+  expect(second.blocks.map(b => b.name)).toEqual(['claudeMd', 'userEmail'])
+  expect(second.instructionFiles.map(f => f.path)).toEqual([`${HOME}/.claude/CLAUDE.md`])
+  expect(second.observedClaudeMd).toBe(true)
 })

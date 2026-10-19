@@ -24,6 +24,8 @@ const uiAtom = atom({ plugin: 'harness', key: 'ui' } as const, emptyUi())
 const env = { home: '', cwd: '', root: '' }
 const mtimes = new Map<string, number>()
 let lastSectionsHash = ''
+/** Une capture (sections, blocs, reminders, skill) est arrivée depuis la dernière reconstruction : la veille reconstruit au prochain tick. */
+let dirty = false
 let building: Promise<void> | null = null
 let watch: { cancel: () => void } | null = null
 
@@ -127,8 +129,15 @@ const rebuild = async ($: EngineInterface, reason: string): Promise<void> => {
   return building
 }
 
-/** Projection lisible de l'inventaire, sans les textes : `~/.claude/harness/inventory.json`. Sert de vue machine et de preuve. */
+/** Projection lisible de l'inventaire, sans les textes : `~/.claude/harness/inventory.json`. Sert de vue machine et de preuve.
+ *  Un seul fichier par `~/.claude` : la dernière session qui reconstruit l'emporte, d'où `sessionId` et `cwd`. */
 const exportInventory = async ($: EngineInterface, inv: HarnessInventory, snap: HarnessSnapshot) => {
+  let sessionId: string | null = null
+  try {
+    sessionId = await $.session.id()
+  } catch {
+    sessionId = null
+  }
   const slim = (items: HarnessItem[]): unknown[] =>
     items.map(i => ({
       id: i.id,
@@ -143,6 +152,8 @@ const exportInventory = async ($: EngineInterface, inv: HarnessInventory, snap: 
     }))
   const out = {
     builtAt: inv.builtAt,
+    sessionId,
+    cwd: env.cwd,
     count: inv.count,
     tokens: inv.tokens,
     observedClaudeMd: inv.observedClaudeMd,
@@ -150,6 +161,7 @@ const exportInventory = async ($: EngineInterface, inv: HarnessInventory, snap: 
     blocks: snap.blocks.map(b => ({ name: b.name, chars: b.text.length })),
     instructionFiles: snap.instructionFiles.map(f => ({ path: f.path, kind: f.kind, ...(f.parent ? { parent: f.parent } : {}) })),
     attachments: snap.attachments.map(a => ({ type: a.type, origin: a.origin, ...(a.event ? { event: a.event } : {}), chars: a.text.length })),
+    skillPrompts: snap.skillPrompts.map(s => s.skill),
     groups: slim(inv.groups),
   }
   try {
@@ -176,9 +188,13 @@ const captureNow = async ($: EngineInterface) => {
   }
 }
 
-/** La veille : tant que le pane est affiché, relit le disque quand un mtime bouge. */
+/** La veille : reconstruit dès qu'une capture est arrivée ; tant que le pane est affiché, relit aussi le disque quand un mtime bouge. */
 const tick = async ($: EngineInterface) => {
   try {
+    if (dirty) {
+      dirty = false
+      await rebuild($, 'capture')
+    }
     const panes = await $.ui.panes()
     if (!panes.some(p => p.id === PANE && p.isShown)) return
     const changed: string[] = []
@@ -254,6 +270,7 @@ export const register: Register = on => {
       const at = await iso($)
       const outputStyle = e.outputStyle?.name ?? null
       await update($, snapshotAtom, () => ({ ...snap, at, sections, outputStyle }))
+      dirty = true
     }
     return result
   })
@@ -264,6 +281,7 @@ export const register: Register = on => {
     const files = (result.instructionFiles ?? e.instructionFiles ?? []).map(f => ({ path: f.path, kind: f.kind, content: f.content, ...(f.parent ? { parent: f.parent } : {}) }))
     const blocks = result.blocks.map(b => ({ name: b.name, text: b.text }))
     await update($, snapshotAtom, () => ({ ...snap, blocks, instructionFiles: files }))
+    dirty = true
     return result
   })
 
@@ -280,6 +298,7 @@ export const register: Register = on => {
     const kept = snap.attachments.filter(a => `${a.type}\u0000${hash(a.text)}` !== key)
     const attachments = [...kept, { type: e.type, text, origin, ...(event ? { event } : {}) }].slice(-100)
     await update($, snapshotAtom, () => ({ ...snap, attachments }))
+    dirty = true
     return result
   })
 
@@ -289,6 +308,7 @@ export const register: Register = on => {
     const at = await iso($)
     const skillPrompts = [...snap.skillPrompts.filter(s => s.skill !== e.skill), { skill: e.skill, text: result.text, at }]
     await update($, snapshotAtom, () => ({ ...snap, skillPrompts }))
+    dirty = true
     return result
   })
 
