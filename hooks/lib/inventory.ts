@@ -101,8 +101,11 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 
 /** Caractères de journal gardés pour le pane. */
 const JOURNAL_TAIL = 6000
-/** Poids retenu pour un style de sortie intégré, dont le prompt n'est pas lisible sur disque : « Concise » mesuré à 1 349 caractères le 2026-10-19. */
-const BUILTIN_STYLE_TOKENS = 400
+/**
+ * Taille en caractères du prompt des styles de sortie intégrés, lus dans le binaire 2.1.295 le 2026-10-19 ; leur texte
+ * n'est pas sur disque. Un style intégré absent d'ici n'a pas de poids connu.
+ */
+const BUILTIN_STYLE_CHARS: Readonly<Record<string, number>> = { Concise: 1349, Explanatory: 1470, Learning: 5400 }
 
 /** La fin d'un journal, coupée au début d'une entrée (`## …`) quand elle dépasse `max` caractères ; l'en-tête saute alors. */
 export const journalTail = (text: string, max: number): string => {
@@ -337,45 +340,99 @@ const hookTitle = (h: ClassicHook) => {
 
 // ---------- style de sortie ----------
 
-/** Le fichier d'un style de sortie : `name:` du frontmatter ou nom de fichier, sans la casse, projet avant utilisateur. */
-const findStyleFile = async (r: Reader, env: Env, name: string): Promise<{ path: string; text: string } | null> => {
-  const wanted = name.trim().toLowerCase()
-  for (const dir of [`${env.root}/.claude/output-styles`, `${env.home}/.claude/output-styles`]) {
-    for (const file of (await r.list(dir)).sort()) {
-      if (!file.endsWith('.md')) continue
-      const path = `${dir}/${file}`
+/** Le frontmatter d'un fichier de style (BOM retiré) : son `name:` et le corps qui suit. */
+const splitStyleFile = (raw: string): { name: string | null; body: string } => {
+  const text = raw.replace(/^\uFEFF/, '')
+  const m = text.match(/^---[ \t]*\r?\n(?:([\s\S]*?)\r?\n)?---[ \t]*(?:\r?\n|$)/)
+  if (!m) return { name: null, body: text.trim() }
+  const name = (m[1] ?? '').match(/^name:[ \t]*(.+?)[ \t]*$/m)?.[1]?.replace(/^["']|["']$/g, '') ?? null
+  return { name: name && name.trim() ? name.trim() : null, body: text.slice(m[0].length).trim() }
+}
+
+/** Les fichiers .md d'un dossier et de ses sous-dossiers (trois niveaux), triés. */
+const listMarkdown = async (r: Reader, dir: string, depth = 0): Promise<string[]> => {
+  const out: string[] = []
+  for (const name of (await r.list(dir)).sort()) {
+    if (name.startsWith('.')) continue
+    const path = `${dir}/${name}`
+    if (name.endsWith('.md')) out.push(path)
+    else if (depth < 3 && !name.includes('.')) out.push(...(await listMarkdown(r, path, depth + 1)))
+  }
+  return out
+}
+
+/** Les dossiers `.claude/output-styles` du dossier de travail jusqu'à la racine du projet, puis celui de l'utilisateur. */
+const styleDirs = (env: Env): string[] => {
+  const dirs: string[] = []
+  let dir = env.cwd.replace(/\/$/, '')
+  const root = env.root.replace(/\/$/, '')
+  while (dir.startsWith(root) && dir.length >= root.length && dir !== '') {
+    dirs.push(`${dir}/.claude/output-styles`)
+    if (dir === root) break
+    dir = dir.slice(0, dir.lastIndexOf('/'))
+  }
+  if (!dirs.includes(`${root}/.claude/output-styles`)) dirs.push(`${root}/.claude/output-styles`)
+  dirs.push(`${env.home}/.claude/output-styles`)
+  return dirs
+}
+
+/**
+ * Le fichier d'un style de sortie, comme le moteur le choisit : nom effectif = `name:` du frontmatter, sinon le nom du
+ * fichier, comparé tel quel (casse comprise) ; projet (du dossier de travail à la racine) avant utilisateur ; un style
+ * `<plugin>:<nom>` est cherché dans `output-styles/` du plugin.
+ */
+const findStyleFile = async (r: Reader, env: Env, plugins: readonly PluginInfo[], wanted: string): Promise<{ path: string; body: string } | null> => {
+  const colon = wanted.indexOf(':')
+  const dirs: string[] = []
+  let name = wanted
+  if (colon > 0) {
+    const plugin = plugins.find(p => p.name === wanted.slice(0, colon))
+    if (!plugin?.root) return null
+    dirs.push(`${plugin.root}/output-styles`)
+    name = wanted.slice(colon + 1)
+  } else dirs.push(...styleDirs(env))
+  for (const dir of dirs) {
+    for (const path of await listMarkdown(r, dir)) {
       const text = await r.text(path)
       if (text === null) continue
-      const declared = text.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1]?.match(/^name:\s*(.+)$/m)?.[1]?.trim().replace(/^["']|["']$/g, '')
-      if ((declared ?? '').toLowerCase() === wanted || file.slice(0, -3).toLowerCase() === wanted) return { path, text }
+      const parsed = splitStyleFile(text)
+      const effective = parsed.name ?? path.slice(path.lastIndexOf('/') + 1, -3)
+      if (effective === name) return { path, body: parsed.body }
     }
   }
   return null
 }
 
+type StyleChoice = { name: string; observed: boolean; key: { source: string; path: string } | null }
+
 /**
- * L'item du style de sortie quand aucun marqueur `# Output Style:` n'a été observé : sous le preset SDK (app de bureau)
- * le prompt du style voyage dans le tour système du premier message, hors de portée des hooks. Il est reconstruit
- * depuis `settings.outputStyle` et le fichier du style s'il est sur disque ; un style intégré n'a pas de texte lisible.
+ * L'item du style de sortie quand aucun marqueur `# Output Style:` n'a été vu : sous le preset SDK (app de bureau) le
+ * prompt du style voyage dans le tour système du premier message, hors de portée des hooks. Le nom vient du moteur
+ * (`prompt.compose`) quand il a été observé, sinon des settings ; `key` dit où est la clé à retirer, quand il y en a une.
  */
-const outputStyleItem = async (r: Reader, env: Env, chosen: { source: string; path: string; name: string }): Promise<Item> => {
-  const file = await findStyleFile(r, env, chosen.name)
-  const disable: Disable = { kind: 'remove-key', path: chosen.path, keyPath: ['outputStyle'] }
+const outputStyleItem = async (r: Reader, env: Env, plugins: readonly PluginInfo[], choice: StyleChoice): Promise<Item> => {
+  const { name, key } = choice
+  const disable: Disable | undefined = key ? { kind: 'remove-key', path: key.path, keyPath: ['outputStyle'] } : undefined
+  const origin = key ? `settings ${key.source}.outputStyle` : 'imposé hors de tes settings (plugin ou politique)'
+  const via = choice.observed ? 'style actif selon prompt.compose' : 'style lu dans settings (compose non observé)'
+  const file = await findStyleFile(r, env, plugins, name)
   if (file) {
-    const body = file.text.replace(/^\uFEFF/, '').replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '').trim()
     return leaf({
-      id: 'settings/style', group: 'settings', title: `Output style « ${chosen.name} »`, text: body, vanilla: false,
+      id: 'settings/style', group: 'settings', title: `Output style « ${name} »`, text: file.body, vanilla: false,
       source: { kind: 'file', path: file.path, tier: file.path.startsWith(`${env.home}/.claude/`) ? 'user' : 'project' },
       disable, edit: 'prompt',
-      badges: [`settings ${chosen.source}.outputStyle`, 'prompt du style lu sur disque', 'non observé par un hook (preset SDK)'],
+      hint: `Prompt du style lu sur disque ; le moteur l'envoie dans le tour système du premier message, hors de portée des hooks.${disable ? '' : ' Aucune clé outputStyle dans tes settings : rien à retirer ici.'}`,
+      badges: [origin, 'prompt du style lu sur disque', via],
     })
   }
+  const chars = BUILTIN_STYLE_CHARS[name]
+  const weight = chars === undefined ? 'poids inconnu' : `poids estimé d'après la taille du style intégré (${chars} caractères, build 2.1.295)`
   return leaf({
-    id: 'settings/style', group: 'settings', title: `Output style « ${chosen.name} »`, tokens: BUILTIN_STYLE_TOKENS, vanilla: false,
-    text: `Style « ${chosen.name} » choisi par settings.outputStyle (${chosen.source}). Son prompt complet est envoyé au modèle dans le tour système du premier message, hors de portée des hooks, et aucun fichier ~/.claude/output-styles/<nom>.md ni .claude/output-styles/<nom>.md ne le porte : style intégré, texte non lisible par le mod. Poids estimé à ${BUILTIN_STYLE_TOKENS} tok (« Concise » mesuré à 1 349 caractères).`,
-    source: { kind: 'settings', path: chosen.path, keyPath: ['outputStyle'] },
-    disable, edit: 'inline',
-    badges: [`settings ${chosen.source}.outputStyle`, 'style intégré : texte non lisible', 'poids estimé'],
+    id: 'settings/style', group: 'settings', title: `Output style « ${name} »`, text: JSON.stringify(name), tokens: chars === undefined ? 0 : estimateTokens('x'.repeat(chars)), vanilla: false,
+    source: key ? { kind: 'settings', path: key.path, keyPath: ['outputStyle'] } : { kind: 'unknown' },
+    disable, edit: key ? 'inline' : undefined,
+    hint: `Style « ${name} » (${origin}). Son prompt est envoyé dans le tour système du premier message, hors de portée des hooks, et aucun fichier de style ne le porte sur disque (.claude/output-styles du projet, ~/.claude/output-styles, output-styles d'un plugin) : style intégré, texte non lisible par le mod ; ${weight}.`,
+    badges: [origin, 'style intégré : texte non lisible', chars === undefined ? 'poids inconnu' : 'poids estimé', via],
   })
 }
 
@@ -586,8 +643,14 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
     }
   }
 
-  // --- style de sortie : construit depuis settings et le disque quand aucun marqueur n'a été observé (pas de doublon sinon)
-  if (!settingsDriven.length && chosenStyle) settings.unshift(await outputStyleItem(r, env, chosenStyle))
+  // --- style de sortie sans marqueur : le nom actif vient du moteur quand prompt.compose a été observé (null = style par
+  // défaut, rien à montrer), sinon des settings ; « default » et le vide ne sont jamais un style. Pas de doublon avec un marqueur.
+  const composeObserved = (snap?.sections.length ?? 0) > 0
+  const activeName = composeObserved ? snap?.outputStyle ?? null : chosenStyle?.name ?? null
+  if (!settingsDriven.length && activeName && activeName.trim() && activeName.trim().toLowerCase() !== 'default') {
+    const key = chosenStyle && chosenStyle.name === activeName ? { source: chosenStyle.source, path: chosenStyle.path } : null
+    settings.unshift(await outputStyleItem(r, env, plugins, { name: activeName.trim(), observed: composeObserved, key }))
+  }
 
   // --- hooks et sections des plugins
   const pluginItems: Item[] = []
@@ -809,15 +872,30 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
         : systemTools ? ['décrits en entier', MEASURED] : ['décrits en entier'],
     }))
     if (server && !mcp.some(i => i.source.kind === 'mcp' && mcpKey(i.source.server) === mcpKey(server))) {
-      // Aucune API côté hooks n'expose les instructions d'un serveur MCP : quand elles n'ont pas été vues en section,
-      // bloc ou reminder, on ne sait pas si le serveur en envoie (sous le preset SDK elles arrivent par
-      // `mcp_instructions_delta` dans le tour système) ; le dire plutôt qu'affirmer « sans instructions ».
+      // Un marqueur « # MCP Server Instructions » observé liste tous les serveurs qui en envoient : un absent n'en envoie
+      // pas. Sans marqueur (preset SDK : elles voyagent dans le tour système du premier message, ou en delta plus tard),
+      // le mod ne sait pas ; dans cette version aucun noun ne les expose ($.tool.list : une phrase ; $.mcp : appel seul).
+      const unobserved = mcpTexts.length === 0
       mcp.push(leaf({
         id: `mcp/${server}`, group: 'mcp', title: server, tokens: 0, vanilla: false, source: { kind: 'mcp', server }, hint: mcpHint(server),
-        text: `Instructions serveur non observables : aucune API côté hooks ne les expose, et aucun marqueur « # MCP Server Instructions » ne les a portées pour ${server}. Si ce serveur en envoie, elles arrivent au modèle dans le tour système du premier message (mcp_instructions_delta), hors de portée du mod, et pèsent sans être comptées ici. ${v.names.length} outil${v.names.length > 1 ? 's' : ''}.`,
-        badges: ['instructions non observables', 'poids non compté'],
+        text: unobserved
+          ? `Instructions serveur non observables : aucun marqueur « # MCP Server Instructions » n'a été vu dans cette session et aucune API côté hooks (2.1.295) n'expose le texte d'un serveur. Si ${server} en envoie, elles arrivent au modèle hors de portée du mod ; leur poids total, lui, est mesuré par /context (item « instructions MCP » de ce groupe). ${v.names.length} outil${v.names.length > 1 ? 's' : ''}.`
+          : `(sans instructions serveur : absent du marqueur observé) ${v.names.length} outil${v.names.length > 1 ? 's' : ''}`,
+        badges: unobserved ? ['instructions non observables'] : ['sans instructions'],
       }))
     }
+  }
+  // /context mesure le poids total des instructions MCP (catégorie « MCP server instructions »), sans le texte par serveur.
+  const mcpInstructions = category(/^mcp server instructions$/i)
+  if (mcpInstructions && mcpInstructions.tokens > 0) {
+    const captured = mcp.filter(i => i.badges?.includes('instructions serveur')).reduce((n, i) => n + i.tokens, 0)
+    mcp.push(leaf({
+      id: 'mcp/instructions-measured', group: 'mcp', title: `instructions MCP : ${formatTokens(mcpInstructions.tokens)} tok au total`, tokens: Math.max(0, mcpInstructions.tokens - captured), vanilla: false,
+      source: { kind: 'unknown' },
+      text: `/context compte ${formatTokens(mcpInstructions.tokens)} tok d'instructions de serveurs MCP dans le contexte${captured ? `, dont ${formatTokens(captured)} tok de texte capturé par un marqueur` : ''}. Le texte des autres serveurs n'est pas observable par le mod ; couper un serveur (voir chaque item) retire ses instructions avec lui.`,
+      hint: 'Mesure globale : pour savoir quel serveur pèse, couper et comparer.',
+      badges: [MEASURED, 'texte par serveur non observable'],
+    }))
   }
   const bySource = new Map<string, string[]>()
   for (const c of commands) bySource.set(c.source, [...(bySource.get(c.source) ?? []), c.name])
