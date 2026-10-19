@@ -181,21 +181,49 @@ function isIndentedBeyond(line: string, base: number): boolean {
  * La puce possède ses lignes indentées (voir isIndentedBeyond), y compris après des lignes vides : sous-puces,
  * suite de texte et fence qu'elle ouvre y sont donc compris, sans qu'on analyse leur contenu. Toute autre ligne
  * non vide, même collée, commence une nouvelle unité : pas de continuation paresseuse, et un fence ouvert dans
- * la puce (même non fermé) s'arrête avec elle.
+ * la puce (même non fermé) s'arrête avec elle, sauf si sa ligne de fermeture est à la marge : elle est alors à la puce.
  */
 function scanBullet(lines: string[], start: number, base: number): number {
   const n = lines.length
   let end = start + 1
   let j = start + 1
+  // Fence ouvert par une ligne indentée de la puce et pas encore fermé : s'il se ferme à la marge
+  // (``` en colonne 0 à 3), la ligne de fermeture appartient à la puce au lieu d'ouvrir un fence de premier niveau.
+  let open: Fence | null = null
+  const inner = (line: string) => line.replace(/^[ \t]+/, '')
   while (j < n) {
     if (BLANK.test(lines[j] ?? '')) {
-      // Des lignes vides ne prolongent la puce que si une ligne indentée les suit.
+      // Des lignes vides ne prolongent la puce que si une ligne indentée les suit (ou la fermeture d'un fence ouvert).
       let k = j + 1
       while (k < n && BLANK.test(lines[k] ?? '')) k++
-      if (k >= n || !isIndentedBeyond(lines[k] ?? '', base)) break
+      if (k >= n) break
+      if (!isIndentedBeyond(lines[k] ?? '', base)) {
+        if (open && closesFence(lines[k] ?? '', open)) {
+          end = k + 1
+          open = null
+          j = k + 1
+          continue
+        }
+        break
+      }
       j = k
     }
-    if (!isIndentedBeyond(lines[j] ?? '', base)) break
+    const cur = lines[j] ?? ''
+    if (!isIndentedBeyond(cur, base)) {
+      if (open && closesFence(cur, open)) {
+        end = j + 1
+        open = null
+        j += 1
+        continue
+      }
+      break
+    }
+    const content = inner(cur)
+    if (open) {
+      if (closesFence(content, open)) open = null
+    } else {
+      open = matchFence(content)
+    }
     end = j + 1
     j += 1
   }

@@ -41,11 +41,11 @@ export const io = (files = FILES, dirs = DIRS): InventoryIo => ({
   pluginDirs: async () => undefined,
   ancestors: async () => [],
   commands: async () => [
-    { name: 'compact', description: 'Compacter', source: 'builtin' },
-    { name: 'grilling', description: 'Griller un plan', source: 'user' },
-    { name: 'hcc:dox-pass', description: 'Passe dox', source: 'plugin', plugin: 'hcc' },
-    { name: 'anthropic-skills:pdf', description: 'PDF', source: 'plugin', plugin: 'anthropic-skills' },
-    { name: 'ccd:tasks', description: 'tâches', source: 'plugin', plugin: 'ccd' },
+    { name: 'compact', description: 'Compacter', source: 'builtin' as const },
+    { name: 'grilling', description: 'Griller un plan', source: 'user' as const },
+    { name: 'hcc:dox-pass', description: 'Passe dox', source: 'plugin' as const, plugin: 'hcc' },
+    { name: 'anthropic-skills:pdf', description: 'PDF', source: 'plugin' as const, plugin: 'anthropic-skills' },
+    { name: 'ccd:tasks', description: 'tâches', source: 'plugin' as const, plugin: 'ccd' },
   ],
   tools: async () => [
     { name: 'Bash', description: 'Exécute une commande', mcp: false },

@@ -20,7 +20,7 @@ export type InventoryIo = {
   exists: (path: string) => Promise<boolean>
   pluginDirs: () => Promise<string | undefined>
   ancestors: (names: string[]) => Promise<readonly { dir: string; name: string; parts: readonly { path: string; content: string }[] }[]>
-  commands: () => Promise<readonly { name: string; description: string; source: string; plugin?: string }[]>
+  commands: () => Promise<readonly { name: string; description: string; source: 'builtin' | 'plugin' | 'user' | 'mcp'; plugin?: string }[]>
   tools: () => Promise<readonly { name: string; description: string; mcp: boolean }[]>
 }
 

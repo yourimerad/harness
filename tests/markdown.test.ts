@@ -243,11 +243,12 @@ describe('parseUnits : listes', () => {
     expect(doc.headings.map(h => h.title)).toEqual(['T'])
   })
 
-  test('un fence non fermé dans une puce, puis un fence ouvert à la marge : la fermeture à la marge ne ferme pas celui de la puce', () => {
+  test('un fence ouvert dans une puce et fermé à la marge : la fermeture appartient à la puce, la suite est libre', () => {
     const doc = parseUnits('- a\n  ```\n  x\n```\nsuite\n```\n')
-    expect(doc.units.map(u => u.kind)).toEqual(['bullet', 'code'])
-    expect(doc.units[0]?.text).toBe('- a\n  ```\n  x')
-    expect(doc.units[1]?.text).toBe('```\nsuite\n```')
+    expect(doc.units.map(u => u.kind)).toEqual(['bullet', 'paragraph', 'code'])
+    expect(doc.units[0]?.text).toBe('- a\n  ```\n  x\n```')
+    expect(doc.units[1]?.text).toBe('suite')
+    expect(doc.units[2]?.text).toBe('```')
   })
 
   test('texte non indenté juste après un bloc de code fermé dans la puce : nouveau paragraphe, pas une continuation', () => {
@@ -879,5 +880,37 @@ describe('replaceUnit', () => {
     const doc = '- old\n- autre\n'
     const out = replaceUnit(doc, unit(doc, '- old').id, 'nouveau texte') ?? ''
     expect(parseUnits(out).units.map(u => u.title)).toEqual(['nouveau texte', 'autre'])
+  })
+})
+
+describe('fence ouvert dans une puce et fermé à la marge', () => {
+  test('la ligne de fermeture appartient à la puce : rien n’est avalé après elle', () => {
+    const doc = '## Outils\n- Exemple :\n  ```sh\n  pnpm i\n```\n- Toujours lancer les tests\n\n## Déploiement\n- Vercel\n'
+    const { headings, units } = parseUnits(doc)
+    expect(headings.map(h => h.title)).toEqual(['Outils', 'Déploiement'])
+    expect(units.map(u => u.title)).toEqual(['Exemple :', 'Toujours lancer les tests', 'Vercel'])
+    expect(units[0]!.text).toBe('- Exemple :\n  ```sh\n  pnpm i\n```')
+    expect(units[0]!.isSingleLine).toBe(false)
+  })
+
+  test('même avec des lignes vides avant la fermeture à la marge', () => {
+    const doc = '- Exemple :\n  ```\n  a\n\n```\n- suite\n'
+    const { units } = parseUnits(doc)
+    expect(units.map(u => u.title)).toEqual(['Exemple :', 'suite'])
+    expect(units[0]!.text).toBe('- Exemple :\n  ```\n  a\n\n```')
+  })
+
+  test('un fence fermé dans la puce ne capture pas un ``` ultérieur à la marge', () => {
+    const doc = '- Exemple :\n  ```\n  a\n  ```\n```\nlibre\n```\n'
+    const { units } = parseUnits(doc)
+    expect(units.map(u => u.kind)).toEqual(['bullet', 'code'])
+    expect(units[1]!.text).toBe('```\nlibre\n```')
+  })
+
+  test('retirer la puce voisine ne touche pas aux sections qui suivent', () => {
+    const doc = '## Outils\n- Exemple :\n  ```sh\n  pnpm i\n```\n- Toujours lancer les tests\n\n## Déploiement\n- Vercel\n'
+    const { units } = parseUnits(doc)
+    const out = removeUnit(doc, units[0]!.id)
+    expect(out?.text).toBe('## Outils\n- Toujours lancer les tests\n\n## Déploiement\n- Vercel\n')
   })
 })
