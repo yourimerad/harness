@@ -85,7 +85,7 @@ const sourcePath = (item: Item): string | null =>
 /** Les tables d'éléments des surfaces qui dessinent le pane en entier (la mobile n'a pas d'Input). */
 export type PaneElements = Elements['terminal'] | Elements['desktop'] | Elements['vscode']
 
-export const renderPane = (els: PaneElements, e: Extract<RenderInput, { component: 'Pane' }>, model: PaneModel, h: PaneHandlers) => {
+export const renderPane = (els: PaneElements, e: Extract<RenderInput, { component: 'Pane' }>, model: PaneModel, act: PaneHandlers) => {
   const { Box, Text, Button, Input, Link, Code } = els
   const width = e.props.bodyColumns
   const leftWidth = Math.max(28, Math.min(44, Math.floor(width * 0.38)))
@@ -128,8 +128,8 @@ export const renderPane = (els: PaneElements, e: Extract<RenderInput, { componen
                   dimColor={item.vanilla && !isSelected}
                   variant={isSelected ? 'primary' : undefined}
                   onPress={() => {
-                    if (hasChildren) h.toggle(item.id)
-                    h.select(item.id)
+                    if (hasChildren) act.toggle(item.id)
+                    act.select(item.id)
                   }}
                 >
                   {label}
@@ -138,7 +138,7 @@ export const renderPane = (els: PaneElements, e: Extract<RenderInput, { componen
             )
           })}
           <Box marginTop={1}>
-            <Button key="rebuild" plain dimColor onPress={() => h.rebuild()}>↻ relire le disque</Button>
+            <Button key="rebuild" plain dimColor onPress={() => act.rebuild()}>↻ relire le disque</Button>
           </Box>
         </Box>
         <Box flexDirection="column" width={rightWidth} borderStyle="single" borderDimColor paddingX={1}>
@@ -153,16 +153,16 @@ export const renderPane = (els: PaneElements, e: Extract<RenderInput, { componen
                   <Button
                     key={`disable:${selected.id}`}
                     variant={model.ui.confirming === selected.id ? 'primary' : 'secondary'}
-                    onPress={() => h.disable(selected)}
+                    onPress={() => act.disable(selected)}
                   >
                     {model.ui.confirming === selected.id ? 'Confirmer la suppression du fichier' : selected.disable.kind === 'remove-file' ? 'Supprimer le fichier' : selected.disable.kind === 'disable-plugin' ? 'Désactiver le plugin' : selected.disable.kind === 'disable-skill' ? 'Désactiver le skill' : 'Désactiver'}
                   </Button>
                 )}
                 {selected.edit === 'inline' && model.ui.editing !== selected.id && (
-                  <Button key={`edit:${selected.id}`} variant="secondary" onPress={() => h.startEdit(selected.id)}>Modifier</Button>
+                  <Button key={`edit:${selected.id}`} variant="secondary" onPress={() => act.startEdit(selected.id)}>Modifier</Button>
                 )}
                 {selected.edit === 'prompt' && (
-                  <Button key={`prompt:${selected.id}`} variant="secondary" onPress={() => h.promptEdit(selected)}>Modifier via Claude</Button>
+                  <Button key={`prompt:${selected.id}`} variant="secondary" onPress={() => act.promptEdit(selected)}>Modifier via Claude</Button>
                 )}
                 {!selected.disable && !selected.edit && selected.children === undefined && (
                   <Text dimColor wrap="wrap">{selected.hint ?? (selected.vanilla ? 'Vanilla : rien à couper ici.' : 'Pas d’action à la source pour cet élément.')}</Text>
@@ -176,9 +176,9 @@ export const renderPane = (els: PaneElements, e: Extract<RenderInput, { componen
                     value={selected.source.kind === 'settings' ? selected.text.replace(/^"|"$/g, '') : selected.text.replace(/^(\s*)([-*+]|\d+[.)])\s+/, '')}
                     submitLabel="enregistrer"
                     autoFocus
-                    onSubmit={value => h.submitEdit(selected, value)}
+                    onSubmit={value => act.submitEdit(selected, value)}
                   />
-                  <Button key={`cancel:${selected.id}`} plain dimColor onPress={() => h.startEdit(null)}>annuler</Button>
+                  <Button key={`cancel:${selected.id}`} plain dimColor onPress={() => act.startEdit(null)}>annuler</Button>
                 </Box>
               )}
               <Box marginTop={1}>

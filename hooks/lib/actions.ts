@@ -77,7 +77,17 @@ const dropIndexLines = async (io: ActionIo, env: ActionEnv, indexPath: string, t
   return ` ; ${n} ligne(s) d'index retirée(s)`
 }
 
+const INVALID_JSON = (path: string): ActionResult => ({ ok: false, notice: `JSON illisible : ${path} (rien n'a été écrit).`, invalidate: [] })
+
 export const runDisable = async (io: ActionIo, env: ActionEnv, item: Item): Promise<ActionResult> => {
+  try {
+    return await disableUnguarded(io, env, item)
+  } catch (err) {
+    return err instanceof SyntaxError && item.disable ? INVALID_JSON(item.disable.path) : { ok: false, notice: `Action en échec : ${String(err)}`, invalidate: [] }
+  }
+}
+
+const disableUnguarded = async (io: ActionIo, env: ActionEnv, item: Item): Promise<ActionResult> => {
   const d = item.disable
   if (!d) return { ok: false, notice: item.hint ?? 'Aucune action à la source pour cet élément.', invalidate: [] }
   if (!isWritable(d.path, env)) return { ok: false, notice: `Hors périmètre d'écriture : ${d.path}`, invalidate: [] }
@@ -161,6 +171,15 @@ export const runDisable = async (io: ActionIo, env: ActionEnv, item: Item): Prom
 }
 
 export const runInlineEdit = async (io: ActionIo, env: ActionEnv, item: Item, value: string): Promise<ActionResult> => {
+  try {
+    return await inlineEditUnguarded(io, env, item, value)
+  } catch (err) {
+    const path = item.source.kind === 'file' || item.source.kind === 'settings' ? item.source.path : '?'
+    return err instanceof SyntaxError ? INVALID_JSON(path) : { ok: false, notice: `Édition en échec : ${String(err)}`, invalidate: [] }
+  }
+}
+
+const inlineEditUnguarded = async (io: ActionIo, env: ActionEnv, item: Item, value: string): Promise<ActionResult> => {
   const src = item.source
   if (src.kind === 'file' && item.disable?.kind === 'remove-unit' && item.disable.unitId) {
     if (!isWritable(src.path, env)) return { ok: false, notice: `Hors périmètre : ${src.path}`, invalidate: [] }

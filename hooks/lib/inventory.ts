@@ -473,10 +473,20 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
     }
     if (c.source === 'plugin') {
       const pluginName = c.plugin ?? c.name.split(':')[0] ?? c.name
-      const p = plugins.find(x => x.name === pluginName)
-      if (!p) {
+      const found = plugins.find(x => x.name === pluginName)
+      // Un plugin absent du disque et sans section dans le system prompt est servi par claude.ai (non-vanilla) ;
+      // un plugin absent du disque qui écrit dans le system prompt fait partie de l'app (vanilla), `ccd` compris.
+      const isAppPlugin = !found && (pluginName === 'ccd' || pluginName.startsWith('ccd_') || app.some(i => i.source.kind === 'builtin' && i.source.plugin === pluginName))
+      if (isAppPlugin) {
         builtinPlugins.set(pluginName, [...(builtinPlugins.get(pluginName) ?? []), c.name])
         continue
+      }
+      const p: PluginInfo = found ?? { name: pluginName, provenance: 'synced', enabled: true, marketplace: 'claude.ai' }
+      if (!found && !pluginItems.some(i => i.id === `plugins/${pluginName}`)) {
+        pluginItems.push({
+          id: `plugins/${pluginName}`, group: 'plugins', title: pluginName, text: `Plugin servi par claude.ai : aucun dossier local. Ses skills et connecteurs arrivent par ton compte claude.ai.`,
+          tokens: 0, vanilla: false, source: { kind: 'claude-ai', what: `plugin ${pluginName}` }, hint: pluginHint(p, env), badges: ['claude.ai'], children: [],
+        })
       }
       const local = p.root !== undefined
       skills.push(leaf({
