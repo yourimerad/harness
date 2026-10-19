@@ -1,7 +1,5 @@
 // Construit l'inventaire : un arbre d'items par groupe, à partir de la capture
-// (snapshot) et d'une lecture du disque. Pur côté logique ; les lectures passent par `$`.
-import type { EngineInterface } from 'claude-code'
-
+// (snapshot) et d'une lecture du disque. Pur côté logique ; les lectures passent par un objet io.
 import type {
   HarnessDisable as Disable,
   HarnessInventory as Inventory,
@@ -14,6 +12,17 @@ import { parseUnits } from './markdown'
 import { estimateTokens } from './tokens'
 
 export type Env = { home: string; cwd: string; root: string; now: string }
+
+/** Les entrées-sorties dont l'inventaire a besoin ; construites dans le module de hooks autour de `$`. */
+export type InventoryIo = {
+  readText: (path: string) => Promise<string | null>
+  list: (path: string) => Promise<string[]>
+  exists: (path: string) => Promise<boolean>
+  pluginDirs: () => Promise<string | undefined>
+  ancestors: (names: string[]) => Promise<readonly { dir: string; name: string; parts: readonly { path: string; content: string }[] }[]>
+  commands: () => Promise<readonly { name: string; description: string; source: string; plugin?: string }[]>
+  tools: () => Promise<readonly { name: string; description: string; mcp: boolean }[]>
+}
 
 export type PluginInfo = {
   name: string
@@ -38,16 +47,12 @@ const BEHAVIOURAL_KEYS = [
   'extraKnownMarketplaces', 'disableBundledSkills', 'statusLine', 'worktree', 'pluginConfigs',
 ]
 
-const makeReader = ($: EngineInterface): Reader => {
+const makeReader = (io: InventoryIo): Reader => {
   const watched = new Set<string>()
   const text = async (path: string) => {
-    try {
-      const out = await $.fs.read(path)
-      watched.add(path)
-      return typeof out === 'string' ? out : null
-    } catch {
-      return null
-    }
+    const out = await io.readText(path)
+    if (out !== null) watched.add(path)
+    return out
   }
   return {
     watched,
@@ -56,25 +61,13 @@ const makeReader = ($: EngineInterface): Reader => {
       const raw = await text(path)
       if (raw === null) return null
       try {
-        return JSON.parse(raw.replace(/^﻿/, '')) as unknown
+        return JSON.parse(raw.replace(/^\uFEFF/, '')) as unknown
       } catch {
         return null
       }
     },
-    list: async path => {
-      try {
-        return (await $.fs.list(path)).map(e => e.name)
-      } catch {
-        return []
-      }
-    },
-    exists: async path => {
-      try {
-        return await $.fs.exists(path)
-      } catch {
-        return false
-      }
-    },
+    list: io.list,
+    exists: io.exists,
   }
 }
 
@@ -141,7 +134,7 @@ const fileItem = (
 
 // ---------- plugins ----------
 
-export const discoverPlugins = async (r: Reader, $: EngineInterface, env: Env): Promise<PluginInfo[]> => {
+export const discoverPlugins = async (r: Reader, io: InventoryIo, env: Env): Promise<PluginInfo[]> => {
   const out: PluginInfo[] = []
   const settings = (await r.json(`${env.home}/.claude/settings.json`)) ?? {}
   const enabled = isRecord(settings) && isRecord(settings.enabledPlugins) ? settings.enabledPlugins : {}
@@ -199,7 +192,7 @@ export const discoverPlugins = async (r: Reader, $: EngineInterface, env: Env): 
       })
     }
   }
-  const inline = await $.env.get('CLAUDE_CODE_PLUGIN_DIRS')
+  const inline = await io.pluginDirs()
   for (const root of (inline ?? '').split(':').filter(Boolean)) {
     const manifest = await r.json(`${root}/.claude-plugin/plugin.json`)
     if (!isRecord(manifest) || typeof manifest.name !== 'string') continue
@@ -251,9 +244,9 @@ const hookTitle = (h: ClassicHook) => {
 
 // ---------- construction ----------
 
-export const buildInventory = async ($: EngineInterface, snap: Snapshot | null, env: Env): Promise<Inventory> => {
-  const r = makeReader($)
-  const plugins = await discoverPlugins(r, $, env)
+export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env: Env): Promise<Inventory> => {
+  const r = makeReader(io)
+  const plugins = await discoverPlugins(r, io, env)
   const userPlugins = new Set(plugins.map(p => p.name))
   const userSettingsPath = `${env.home}/.claude/settings.json`
 
@@ -311,9 +304,9 @@ export const buildInventory = async ($: EngineInterface, snap: Snapshot | null, 
     }
     await push(`${env.home}/.claude/CLAUDE.md`, 'user', 'global')
     for (const name of await r.list(`${env.home}/.claude/rules`)) if (name.endsWith('.md')) await push(`${env.home}/.claude/rules/${name}`, 'rule', 'règle globale')
-    let ancestors: Awaited<ReturnType<EngineInterface['fs']['ancestors']>> = []
+    let ancestors: Awaited<ReturnType<InventoryIo['ancestors']>> = []
     try {
-      ancestors = await $.fs.ancestors({ names: ['CLAUDE.md', 'CLAUDE.local.md'] })
+      ancestors = await io.ancestors(['CLAUDE.md', 'CLAUDE.local.md'])
     } catch {
       ancestors = []
     }
@@ -446,9 +439,9 @@ export const buildInventory = async ($: EngineInterface, snap: Snapshot | null, 
   // --- skills et commandes
   const skills: Item[] = []
   const builtinPlugins = new Map<string, string[]>()
-  let commands: readonly { name: string; description: string; source: string; plugin?: string }[] = []
+  let commands: Awaited<ReturnType<InventoryIo['commands']>> = []
   try {
-    commands = await $.command.list()
+    commands = await io.commands()
   } catch {
     commands = []
   }
@@ -536,9 +529,9 @@ export const buildInventory = async ($: EngineInterface, snap: Snapshot | null, 
 
   // --- surface (outils et commandes)
   const surface: Item[] = []
-  let tools: readonly { name: string; description: string; mcp: boolean }[] = []
+  let tools: Awaited<ReturnType<InventoryIo['tools']>> = []
   try {
-    tools = await $.tool.list()
+    tools = await io.tools()
   } catch {
     tools = []
   }

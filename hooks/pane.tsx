@@ -1,5 +1,5 @@
 // Le rendu du pane « Harnais » : arbre à gauche, détail à droite. Pur : reçoit l'état et des handlers.
-import type { EngineInterface, RenderInput } from 'claude-code'
+import type { Elements, RenderInput } from 'claude-code'
 
 import type { HarnessInventory as Inventory, HarnessItem as Item, HarnessSnapshot as Snapshot, HarnessUi as Ui } from '../types'
 import { formatTokens } from './lib/tokens'
@@ -82,16 +82,11 @@ const sourceLine = (item: Item, home: string): string => {
 const sourcePath = (item: Item): string | null =>
   item.source.kind === 'file' ? item.source.path : item.source.kind === 'settings' ? item.source.path : item.source.kind === 'plugin' && item.source.root ? item.source.root : null
 
-export const renderPane = ($: EngineInterface, e: Extract<RenderInput, { component: 'Pane' }>, model: PaneModel, h: PaneHandlers) => {
-  if (e.surface === 'mobile') {
-    const { Box, Text } = $.ui.resolve(e)
-    return (
-      <Box flexDirection="column">
-        <Text dimColor>Le pane Harnais se lit sur le bureau ou dans un terminal.</Text>
-      </Box>
-    )
-  }
-  const { Box, Text, Button, Input, Link, Code } = $.ui.resolve(e)
+/** Les tables d'éléments des surfaces qui dessinent le pane en entier (la mobile n'a pas d'Input). */
+export type PaneElements = Elements['terminal'] | Elements['desktop'] | Elements['vscode']
+
+export const renderPane = (els: PaneElements, e: Extract<RenderInput, { component: 'Pane' }>, model: PaneModel, h: PaneHandlers) => {
+  const { Box, Text, Button, Input, Link, Code } = els
   const width = e.props.bodyColumns
   const leftWidth = Math.max(28, Math.min(44, Math.floor(width * 0.38)))
   const rightWidth = Math.max(20, width - leftWidth - 3)
