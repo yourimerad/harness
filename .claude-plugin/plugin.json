@@ -2,5 +2,9 @@
   "name": "harness",
   "version": "0.1.0",
   "description": "Voir 100 % du harnais actif (CLAUDE.md, mémoire, settings, hooks, plugins, skills, MCP, reminders) et le tailler à la source.",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Youri"
+  },
+  "license": "MIT"
 }

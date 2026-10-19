@@ -1,0 +1,16 @@
+{
+  "name": "harness",
+  "owner": { "name": "Youri" },
+  "metadata": { "description": "harness : voir 100 % du harnais actif de Claude Code et le tailler à la source." },
+  "plugins": [
+    {
+      "name": "harness",
+      "source": "./",
+      "description": "Pane « Harnais » : tout ce qui entre dans le contexte (CLAUDE.md, mémoire, settings, hooks, plugins, skills, MCP, reminders), avec désactivation et édition à la source.",
+      "author": { "name": "Youri" },
+      "license": "MIT",
+      "keywords": ["harness", "context", "claude-md", "hooks", "plugins", "pane"],
+      "category": "workflow"
+    }
+  ]
+}
