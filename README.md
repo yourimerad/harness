@@ -56,7 +56,7 @@ Ce que le mod ne voit pas, ou voit en partie, et pourquoi. Vérifiable dans `~/.
 Depuis un terminal :
 
 ```bash
-/plugin install harness --marketplace yourihamon/harness
+/plugin install harness --marketplace yourimerad/harness
 ```
 
 Ou, pour un dépôt local, ajouter le dossier comme marketplace (`claude plugin marketplace add ~/harness`) puis `claude plugin install harness@harness`.
