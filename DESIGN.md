@@ -78,7 +78,7 @@ Règles de découpage : une puce de premier niveau commence à la colonne 0 par 
 ### hooks/lib/settings.ts
 
 ```ts
-/** Retire la clé au chemin donné (objet ou index de tableau). Conserve l'indentation (2 espaces) et le saut de ligne final.
+/** Retire la clé au chemin donné (objet ou index de tableau). Conserve l'indentation du fichier (tabulation, ou N espaces d'après la première ligne indentée ; 2 par défaut), le BOM, les CRLF et le saut de ligne final.
  *  Retourne null si le chemin n'existe pas. Ne retire pas les parents devenus vides (le code appelant décide). */
 export function removeKey(json: string, keyPath: (string | number)[]): { text: string; removed: unknown } | null
 export function setKey(json: string, keyPath: (string | number)[], value: unknown): string
@@ -90,21 +90,22 @@ export function getKey(json: string, keyPath: (string | number)[]): unknown
 ```ts
 export type JournalAction = 'remove-unit' | 'remove-file' | 'edit-unit' | 'remove-key' | 'set-key' | 'disable-plugin' | 'disable-skill' | 'remove-hook'
 export type JournalEntry = { at: string; action: JournalAction; target: string; before?: string; after?: string; note?: string }
-export function formatEntry(e: JournalEntry): string   // bloc markdown `## <at> · <action> · <target>` + fences
+export function formatEntry(e: JournalEntry): string   // bloc markdown `## <at> · <action> · <target>` + fences ; `\r` seul → `\n` dans note/before/after
 ```
 
 ### hooks/lib/tokens.ts
 
 ```ts
 export function estimateTokens(text: string): number   // Math.ceil(text.length / 3.5)
-export function formatTokens(n: number): string        // '≈ 1,2 k' / '≈ 340'
+export function formatTokens(n: number): string        // '≈ 340' / '≈ 1,2 k' / '≈ 12 k' / '≈ 1,2 M' / '≈ 12 M' ; plafond '≈ 999 M'
 ```
 
 ### hooks/lib/classify.ts
 
 ```ts
-export function memoryDirFor(home: string, cwd: string): string         // `${home}/.claude/projects/${cwd.replace(/[^A-Za-z0-9]/g, '-')}/memory`
-export function sectionSource(id: string, userPlugins: ReadonlySet<string>): Source   // id nu → engine ; `<p>:<n>` → plugin si p ∈ userPlugins, sinon builtin
+export function memoryDirFor(home: string, cwd: string): string         // `${home}/.claude/projects/${nom}/memory` ; nom = cwd assaini (/[^A-Za-z0-9]/ → '-'), tronqué comme le moteur au-delà de 200 : 200 premiers + '-' + |hash Java de cwd| en base 36
+export function bareName(key: string): string                            // clé `enabledPlugins` → nom nu : partie avant le premier '@'
+export function sectionSource(id: string, userPlugins: ReadonlySet<string>): Source   // id nu → engine ; `<p>:<n>` → plugin si p ∈ userPlugins (noms NUS : l'appelant passe bareName(clé)), sinon builtin
 export function toolProvider(name: string): { kind: 'engine' | 'mcp'; server?: string } // `mcp__<server>__<tool>`
 ```
 

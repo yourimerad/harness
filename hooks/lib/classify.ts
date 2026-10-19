@@ -1,14 +1,40 @@
 // Classement des éléments du contexte par provenance. Pur : aucune API Node ni DOM.
 import type { Source } from './model'
 
+/** Longueur au-delà de laquelle le moteur tronque le nom de dossier d'un projet. */
+const MAX_SANITIZED_LENGTH = 200
+
+/** `String.hashCode()` de Java sur les unités UTF-16 : entier 32 bits signé, comme le calcule le moteur. */
+function javaHashCode(text: string): number {
+  let h = 0
+  for (let i = 0; i < text.length; i++) h = ((h << 5) - h + text.charCodeAt(i)) | 0
+  return h
+}
+
 /**
  * Dossier mémoire d'un projet : `<home>/.claude/projects/<cwd assaini>/memory`.
  * L'assainissement remplace chaque caractère hors [A-Za-z0-9] par `-` (chaque unité UTF-16, comme le moteur).
- * Les `/` en fin de `home` sont ignorés. Limite : ne reproduit pas une éventuelle troncature des très longs chemins.
+ * Au-delà de 200 caractères, le moteur tronque : les 200 premiers, puis `-` et le hash Java de `cwd` (le chemin
+ * d'origine, pas l'assaini) en valeur absolue, en base 36 — deux longs chemins au même début restent distincts.
+ * Les `/` en fin de `home` sont ignorés.
  */
 export function memoryDirFor(home: string, cwd: string): string {
   const root = home.replace(/\/+$/, '')
-  return `${root}/.claude/projects/${cwd.replace(/[^A-Za-z0-9]/g, '-')}/memory`
+  const sanitized = cwd.replace(/[^a-zA-Z0-9]/g, '-')
+  const name =
+    sanitized.length <= MAX_SANITIZED_LENGTH
+      ? sanitized
+      : `${sanitized.slice(0, MAX_SANITIZED_LENGTH)}-${Math.abs(javaHashCode(cwd)).toString(36)}`
+  return `${root}/.claude/projects/${name}/memory`
+}
+
+/**
+ * Nom nu d'un plugin à partir de sa clé (`enabledPlugins`, `hcc@local`) : la partie avant le premier `@`
+ * (`hcc@local` → `hcc`, `hcc` → `hcc`). Une clé qui commence par `@` donne `''`.
+ */
+export function bareName(key: string): string {
+  const at = key.indexOf('@')
+  return at === -1 ? key : key.slice(0, at)
 }
 
 /**
@@ -17,6 +43,10 @@ export function memoryDirFor(home: string, cwd: string): string {
  * - `<plugin>:<nom>` : plugin de l'utilisateur si `<plugin>` est dans `userPlugins`, sinon plugin intégré à l'app ;
  * - l'id se coupe au premier `:` (`a:b:c` → plugin `a`) ;
  * - préfixe vide (`:x`) : id mal formé, donc `unknown`.
+ *
+ * `userPlugins` contient des noms NUS de plugins (`hcc`), sans `@marketplace` : l'id d'une section n'en porte
+ * jamais, donc `hcc@local` ne correspondrait à rien. L'appelant passe `bareName(clé)` pour chaque clé
+ * (`new Set(clés.map(bareName))`).
  */
 export function sectionSource(id: string, userPlugins: ReadonlySet<string>): Source {
   const colon = id.indexOf(':')

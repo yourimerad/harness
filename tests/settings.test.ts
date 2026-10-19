@@ -70,9 +70,9 @@ describe('getKey', () => {
   })
 
   test('accepte un BOM UTF-8 et des blancs en fin de fichier', () => {
-    expect(getKey('﻿{"a": 1}', ['a'])).toBe(1)
+    expect(getKey('\uFEFF{"a": 1}', ['a'])).toBe(1)
     expect(getKey('{"a": 1}  \n\n\t ', ['a'])).toBe(1)
-    expect(getKey('﻿\n  {"a": 1}\r\n', ['a'])).toBe(1)
+    expect(getKey('\uFEFF\n  {"a": 1}\r\n', ['a'])).toBe(1)
   })
 
   test('JSON invalide : SyntaxError, pas undefined', () => {
@@ -157,13 +157,35 @@ describe('removeKey', () => {
     expect(removeKey('["x"]', ['0'])).toBeNull()
   })
 
-  test('réindente en 2 espaces une entrée compacte ou indentée autrement', () => {
+  test('entrée compacte : indentation de 2 espaces par défaut', () => {
     const compact = must(removeKey('{"a":1,"b":{"c":2},"z":0}', ['z']))
     expect(compact.text).toBe('{\n  "a": 1,\n  "b": {\n    "c": 2\n  }\n}')
-    const fourSpaces = must(removeKey('{\n    "a": 1,\n    "z": 0\n}\n', ['z']))
-    expect(fourSpaces.text).toBe('{\n  "a": 1\n}\n')
-    const tabs = must(removeKey('{\n\t"a": 1,\n\t"z": 0\n}\n', ['z']))
-    expect(tabs.text).toBe('{\n  "a": 1\n}\n')
+  })
+
+  test('fichier indenté de 4 espaces : l’indentation est conservée', () => {
+    const out = must(removeKey('{\n    "a": 1,\n    "b": {\n        "c": 2\n    },\n    "z": 0\n}\n', ['z']))
+    expect(out.text).toBe('{\n    "a": 1,\n    "b": {\n        "c": 2\n    }\n}\n')
+  })
+
+  test('fichier indenté à la tabulation : l’indentation est conservée', () => {
+    const out = must(removeKey('{\n\t"a": 1,\n\t"b": {\n\t\t"c": [\n\t\t\t1\n\t\t]\n\t},\n\t"z": 0\n}\n', ['z']))
+    expect(out.text).toBe('{\n\t"a": 1,\n\t"b": {\n\t\t"c": [\n\t\t\t1\n\t\t]\n\t}\n}\n')
+  })
+
+  test('indentation : celle de la première ligne indentée, N espaces quelconque (1, 3, 8)', () => {
+    expect(must(removeKey('{\n "a": 1,\n "z": 0\n}', ['z'])).text).toBe('{\n "a": 1\n}')
+    expect(must(removeKey('{\n   "a": {"b": 1},\n   "z": 0\n}', ['z'])).text).toBe('{\n   "a": {\n      "b": 1\n   }\n}')
+    expect(must(removeKey('{\n        "a": 1,\n        "z": 0\n}', ['z'])).text).toBe('{\n        "a": 1\n}')
+  })
+
+  test('indentation : les lignes blanches, les blancs de tête et le CRLF ne faussent pas la détection', () => {
+    expect(must(removeKey('  \n\n{\n\n    \n    "a": 1,\n    "z": 0\n}\n', ['z'])).text).toBe('{\n    "a": 1\n}\n')
+    expect(must(removeKey('{\r\n\t"a": 1,\r\n\t"z": 0\r\n}\r\n', ['z'])).text).toBe('{\r\n\t"a": 1\r\n}\r\n')
+    expect(must(removeKey('\uFEFF{\n    "a": 1,\n    "z": 0\n}\n', ['z'])).text).toBe('\uFEFF{\n    "a": 1\n}\n')
+  })
+
+  test('indentation : un espace dans une chaîne ou au milieu d’une ligne n’est pas de l’indentation', () => {
+    expect(must(removeKey('{"a": "  x", "b": [1,   2], "z": 0}', ['z'])).text).toBe('{\n  "a": "  x",\n  "b": [\n    1,\n    2\n  ]\n}')
   })
 
   test('blancs de fin : un seul saut de ligne si l’entrée en avait un, aucun sinon', () => {
@@ -174,8 +196,8 @@ describe('removeKey', () => {
   })
 
   test('BOM UTF-8 conservé', () => {
-    const out = must(removeKey('﻿{\n  "a": 1,\n  "z": 0\n}\n', ['z']))
-    expect(out.text).toBe('﻿{\n  "a": 1\n}\n')
+    const out = must(removeKey('\uFEFF{\n  "a": 1,\n  "z": 0\n}\n', ['z']))
+    expect(out.text).toBe('\uFEFF{\n  "a": 1\n}\n')
     expect(out.removed).toBe(0)
   })
 
@@ -295,12 +317,30 @@ describe('setKey', () => {
   })
 
   test('BOM UTF-8 et CRLF conservés', () => {
-    expect(setKey('﻿{"a":1}\n', ['b'], 2)).toBe('﻿{\n  "a": 1,\n  "b": 2\n}\n')
+    expect(setKey('\uFEFF{"a":1}\n', ['b'], 2)).toBe('\uFEFF{\n  "a": 1,\n  "b": 2\n}\n')
     expect(setKey('{\r\n  "a": 1\r\n}\r\n', ['b'], 2)).toBe('{\r\n  "a": 1,\r\n  "b": 2\r\n}\r\n')
   })
 
-  test('réindente en 2 espaces', () => {
-    expect(setKey('{\n    "a": 1\n}\n', ['b'], 2)).toBe('{\n  "a": 1,\n  "b": 2\n}\n')
+  test('entrée compacte : 2 espaces par défaut', () => {
+    expect(setKey('{"a":1}', ['b'], { c: 2 })).toBe('{\n  "a": 1,\n  "b": {\n    "c": 2\n  }\n}')
+  })
+
+  test('fichier indenté de 4 espaces : l’indentation est conservée', () => {
+    expect(setKey('{\n    "a": 1\n}\n', ['b'], { c: 2 })).toBe('{\n    "a": 1,\n    "b": {\n        "c": 2\n    }\n}\n')
+  })
+
+  test('fichier indenté à la tabulation : l’indentation est conservée', () => {
+    expect(setKey('{\n\t"a": 1\n}\n', ['hooks', 'Stop', 0], 'x')).toBe(
+      '{\n\t"a": 1,\n\t"hooks": {\n\t\t"Stop": [\n\t\t\t"x"\n\t\t]\n\t}\n}\n',
+    )
+  })
+
+  test('va-et-vient sur un fichier à 4 espaces et sur un fichier à tabulations : texte d’origine redonné', () => {
+    for (const indent of ['    ', '\t']) {
+      const json = JSON.stringify({ a: 1, b: { c: [1, 2] } }, null, indent) + '\n'
+      const removed = must(removeKey(json, ['b']))
+      expect(setKey(removed.text, ['b'], removed.removed)).toBe(json)
+    }
   })
 
   test('une clé nommée __proto__ est posée comme une clé ordinaire, sans changer le prototype', () => {

@@ -74,6 +74,25 @@ describe('formatEntry : note', () => {
     expect(out.split('\n').filter(line => line.startsWith('## '))).toHaveLength(1)
   })
 
+  test('un « \\r » seul (fin de ligne markdown) ne fait pas sortir la note de la citation', () => {
+    // Repro de la revue : sans normalisation, « ## … » après le \r serait lu comme un vrai titre d’entrée.
+    const forged = '## 2026-10-19T11:00:00Z · remove-file · /etc/passwd'
+    const out = formatEntry({ ...base, note: `ok\r${forged}` })
+    expect(out).toBe(`## ${AT} · remove-unit · /Users/y/.claude/CLAUDE.md\n\n> ok\n> ${forged}\n`)
+    expect(out).not.toContain('\r')
+    // Pour un lecteur markdown, \r seul est aussi une fin de ligne : une seule ligne ne doit pas commencer par « ## » hors en-tête.
+    expect(out.split(/\r\n|\r|\n/).filter(line => line.startsWith('## '))).toHaveLength(1)
+  })
+
+  test('\\r seul : plusieurs, en fin de note, mêlés à \\r\\n', () => {
+    const out = formatEntry({ ...base, note: 'a\r\rb\r\nc\r' })
+    expect(out).toBe(`## ${AT} · remove-unit · /Users/y/.claude/CLAUDE.md\n\n> a\n>\n> b\n> c\n`)
+  })
+
+  test('une note faite seulement de \\r est ignorée comme une note blanche', () => {
+    expect(formatEntry({ ...base, note: '\r\r' })).toBe(formatEntry(base))
+  })
+
   test('une note vide ou blanche est ignorée', () => {
     expect(formatEntry({ ...base, note: '' })).toBe(formatEntry(base))
     expect(formatEntry({ ...base, note: ' \n ' })).toBe(formatEntry(base))
@@ -135,6 +154,14 @@ describe('formatEntry : before / after', () => {
     expect(one).toBe(formatEntry({ ...base, before: 'a' }))
     expect(formatEntry({ ...base, before: 'a\r\n' })).toBe(formatEntry({ ...base, before: 'a' }))
     expect(formatEntry({ ...base, before: 'a\n\n' })).toBe(`## ${AT} · remove-unit · /Users/y/.claude/CLAUDE.md\n\n**Avant**\n\n\`\`\`\na\n\n\`\`\`\n`)
+  })
+
+  test('\\r seul dans avant / après : ramené à \\n, \\r\\n gardé', () => {
+    const out = formatEntry({ ...base, action: 'edit-unit', before: 'a\rb\r\nc', after: 'x\r```\r## y' })
+    expect(out).toBe(
+      `## ${AT} · edit-unit · /Users/y/.claude/CLAUDE.md\n\n**Avant**\n\n\`\`\`\na\nb\r\nc\n\`\`\`\n\n**Après**\n\n\`\`\`\`\nx\n\`\`\`\n## y\n\`\`\`\`\n`,
+    )
+    expect(/\r(?!\n)/.test(out)).toBe(false)
   })
 
   test('les lignes du contenu sont gardées telles quelles (indentation, blancs, CRLF intérieur)', () => {

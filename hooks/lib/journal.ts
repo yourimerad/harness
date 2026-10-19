@@ -30,6 +30,14 @@ function longestBacktickRun(text: string): number {
   return longest
 }
 
+/**
+ * `\r` seul (non suivi de `\n`) devient `\n`. Un lecteur markdown le prend pour une fin de ligne, pas notre
+ * découpage (`\n` / `\r\n`) : `ok\r## faux titre` resterait une ligne citée pour nous et deviendrait un vrai titre pour lui.
+ */
+function normalizeBareCr(text: string): string {
+  return text.replace(/\r(?!\n)/g, '\n')
+}
+
 /** Une seule ligne, sans retour chariot : l'en-tête d'une entrée ne doit jamais s'étaler. */
 function oneLine(text: string): string {
   return text.replace(/\s*[\r\n]+\s*/g, ' ').trim()
@@ -72,11 +80,12 @@ function quoted(note: string): string {
  *     …
  *
  * Se termine par exactement un saut de ligne. L'appelant sépare les entrées par une ligne vide.
+ * Un `\r` seul dans la note, `before` ou `after` est ramené à `\n` avant la citation ou la clôture (`\r\n` est gardé).
  */
 export function formatEntry(e: JournalEntry): string {
   const blocks = [`## ${oneLine(e.at)} · ${e.action} · ${oneLine(e.target)}`]
-  if (e.note !== undefined && e.note.trim() !== '') blocks.push(quoted(e.note))
-  if (e.before !== undefined) blocks.push('**Avant**', fenced(e.before))
-  if (e.after !== undefined) blocks.push('**Après**', fenced(e.after))
+  if (e.note !== undefined && e.note.trim() !== '') blocks.push(quoted(normalizeBareCr(e.note)))
+  if (e.before !== undefined) blocks.push('**Avant**', fenced(normalizeBareCr(e.before)))
+  if (e.after !== undefined) blocks.push('**Après**', fenced(normalizeBareCr(e.after)))
   return `${blocks.join('\n\n')}\n`
 }
