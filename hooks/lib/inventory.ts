@@ -40,7 +40,10 @@ export type PluginInfo = {
   name: string
   version?: string
   description?: string
+  /** Le dossier que le moteur lit ; pour une marketplace « directory », la source elle-même, pas la copie de plugins/cache. */
   root?: string
+  /** La copie laissée par `claude plugin install` quand le moteur lit ailleurs (`root`). */
+  installPath?: string
   provenance: 'installed' | 'synced' | 'dev' | 'inline'
   marketplace?: string
   enabled: boolean
@@ -190,22 +193,53 @@ const fileItem = (
 
 // ---------- plugins ----------
 
+/** Chemin joint sans module `path` : segments `.` ignorés, `..` remontés. */
+const joinPath = (base: string, rel: string): string => {
+  const parts = base.split('/').filter(Boolean)
+  for (const seg of rel.split('/')) {
+    if (seg === '' || seg === '.') continue
+    if (seg === '..') parts.pop()
+    else parts.push(seg)
+  }
+  return `/${parts.join('/')}`
+}
+
+/** Le dossier d'où le moteur lit un plugin d'une marketplace « directory » (`claude plugin list` : « Read from ») : la
+ *  source relative que le marketplace.json de ce dossier déclare. Pour toute autre marketplace, undefined (la copie fait foi). */
+const readFromFolder = async (r: Reader, marketplaces: unknown, name: string, marketplace: string | undefined): Promise<string | undefined> => {
+  if (!marketplace || !isRecord(marketplaces)) return undefined
+  const m = marketplaces[marketplace]
+  if (!isRecord(m) || !isRecord(m.source) || m.source.source !== 'directory') return undefined
+  const location = typeof m.installLocation === 'string' ? m.installLocation : typeof m.source.path === 'string' ? m.source.path : undefined
+  if (!location) return undefined
+  const manifest = await r.json(`${location}/.claude-plugin/marketplace.json`)
+  if (!isRecord(manifest) || !Array.isArray(manifest.plugins)) return undefined
+  const entry = manifest.plugins.find(p => isRecord(p) && p.name === name)
+  const source = isRecord(entry) && typeof entry.source === 'string' ? entry.source : undefined
+  if (source === undefined || /^[a-z]+:/i.test(source)) return undefined
+  return joinPath(location, source)
+}
+
 export const discoverPlugins = async (r: Reader, io: InventoryIo, env: Env): Promise<PluginInfo[]> => {
   const out: PluginInfo[] = []
   const settings = (await r.json(`${env.home}/.claude/settings.json`)) ?? {}
   const enabled = isRecord(settings) && isRecord(settings.enabledPlugins) ? settings.enabledPlugins : {}
   const installed = await r.json(`${env.home}/.claude/plugins/installed_plugins.json`)
+  const marketplaces = await r.json(`${env.home}/.claude/plugins/known_marketplaces.json`)
   if (isRecord(installed) && isRecord(installed.plugins)) {
     for (const [key, entries] of Object.entries(installed.plugins)) {
       const [name, marketplace] = key.split('@')
       const first = Array.isArray(entries) && entries.length > 0 ? entries[0] : null
-      const root = isRecord(first) && typeof first.installPath === 'string' ? first.installPath : undefined
+      const installPath = isRecord(first) && typeof first.installPath === 'string' ? first.installPath : undefined
+      const folder = await readFromFolder(r, marketplaces, name ?? key, marketplace)
+      const root = folder ?? installPath
       const version = isRecord(first) && typeof first.version === 'string' ? first.version : undefined
       const manifest = root ? await r.json(`${root}/.claude-plugin/plugin.json`) : null
       out.push({
         name: name ?? key,
         marketplace,
         root,
+        ...(folder && installPath && folder !== installPath ? { installPath } : {}),
         version,
         description: isRecord(manifest) && typeof manifest.description === 'string' ? manifest.description : undefined,
         provenance: 'installed',
@@ -221,9 +255,10 @@ export const discoverPlugins = async (r: Reader, io: InventoryIo, env: Env): Pro
     for (const p of manifest.plugins) {
       if (!isRecord(p) || typeof p.name !== 'string') continue
       const root = `${syncedRoot}/${bucket}/${p.name}`
+      const local = (await r.exists(root)) ? await r.json(`${root}/.claude-plugin/plugin.json`) : null
       out.push({
         name: p.name,
-        version: typeof p.version === 'string' ? p.version : undefined,
+        version: isRecord(local) && typeof local.version === 'string' ? local.version : typeof p.version === 'string' ? p.version : undefined,
         description: typeof p.description === 'string' ? p.description : undefined,
         marketplace: typeof p.marketplaceName === 'string' ? p.marketplaceName : 'claude.ai',
         root: (await r.exists(root)) ? root : undefined,
@@ -379,7 +414,13 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
   const observed = snap?.instructionFiles ?? []
   const observedClaudeMd = observed.length > 0
   const seen = new Set<string>()
+  // L'index mémoire voyage dans le même bloc que les CLAUDE.md (kind `memory`) : il est listé une fois, dans « Mémoire ».
+  const observedIndex = observed.find(f => f.kind === 'memory')
   for (const f of observed) {
+    if (f.kind === 'memory') {
+      seen.add(f.path)
+      continue
+    }
     const disk = await r.text(f.path)
     const text = disk ?? f.content
     const tier = (['managed', 'user', 'project', 'local', 'memory'] as const).find(t => t === f.kind) ?? 'project'
@@ -428,12 +469,12 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
   // --- mémoire
   const memory: Item[] = []
   const memDirMatch = memoryText?.match(/memory at `([^`]+)`/)
-  const memDir = (memDirMatch?.[1] ?? memoryDirFor(env.home, env.cwd)).replace(/\/$/, '')
+  const memDir = (observedIndex?.path.replace(/\/MEMORY\.md$/, '') ?? memDirMatch?.[1] ?? memoryDirFor(env.home, env.cwd)).replace(/\/$/, '')
   const indexPath = `${memDir}/MEMORY.md`
-  const indexText = await r.text(indexPath)
+  const indexText = (await r.text(indexPath)) ?? observedIndex?.content ?? null
   const referenced = new Set<string>()
   if (indexText !== null) {
-    const idx = fileItem('memory', indexPath, indexText, 'memory', env.home, { badges: ['index chargé à chaque session'] })
+    const idx = fileItem('memory', indexPath, indexText, 'memory', env.home, { badges: ['index chargé à chaque session', ...(observedIndex ? ['observé'] : [])] })
     idx.title = 'MEMORY.md (index)'
     idx.children = (idx.children ?? []).map(u => {
       const m = u.text.match(/\]\(([^)]+\.md)\)/)
@@ -534,9 +575,9 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
     }
     pluginItems.push({
       id: `plugins/${p.name}`, group: 'plugins', title: `${p.name}${p.version ? ` ${p.version}` : ''}${p.enabled ? '' : ' (désactivé)'}`,
-      text: [p.description ?? '', '', `Provenance : ${p.provenance}${p.marketplace ? ` (${p.marketplace})` : ''}`, p.root ? `Dossier : ${p.root}` : 'Aucun dossier local : servi par claude.ai.'].join('\n'),
+      text: [p.description ?? '', '', `Provenance : ${p.provenance}${p.marketplace ? ` (${p.marketplace})` : ''}`, p.root ? `Dossier : ${p.root}` : 'Aucun dossier local : servi par claude.ai.', ...(p.installPath ? [`Copie d'installation (non lue) : ${p.installPath}`] : [])].join('\n'),
       tokens: children.reduce((n, c) => n + c.tokens, 0), vanilla: false, source: { kind: 'plugin', name: p.name, root: p.root },
-      disable: pluginDisable(p, env), hint: pluginHint(p, env), badges: [p.provenance, ...(p.enabled ? [] : ['désactivé'])], children,
+      disable: pluginDisable(p, env), hint: pluginHint(p, env), badges: [p.provenance, ...(p.installPath ? ['lu depuis son dossier'] : []), ...(p.enabled ? [] : ['désactivé'])], children,
     })
   }
 

@@ -93,8 +93,9 @@ const actionIo = ($: EngineInterface): ActionIo => ({
 
 const ensureEnv = async ($: EngineInterface) => {
   if (!env.home) env.home = (await $.env.get('HOME')) ?? ''
-  if (!env.cwd) env.cwd = await $.session.cwd()
-  if (!env.root) env.root = (await $.session.root().catch(() => env.cwd)) || env.cwd
+  // cwd et root suivent la session (change_directory, worktree) : relus à chaque reconstruction.
+  env.cwd = (await $.session.cwd().catch(() => env.cwd)) || env.cwd
+  env.root = (await $.session.root().catch(() => env.cwd)) || env.cwd
 }
 
 const showStatus = ($: EngineInterface, inv: HarnessInventory | null) =>

@@ -15,6 +15,35 @@ describe('discoverPlugins', () => {
     const found = await discoverPlugins(r, io(), env)
     expect(found.map(p => p.name)).toEqual(['hcc'])
     expect(found[0]).toMatchObject({ provenance: 'installed', root: HCC, enabled: true, marketplace: 'hcc' })
+    expect(found[0]!.installPath).toBeUndefined()
+  })
+
+  test('marketplace locale (directory) : le dossier lu est la source déclarée, la copie de plugins/cache est signalée', async () => {
+    const files: Record<string, string> = {
+      ...FILES,
+      [`${HOME}/.claude/plugins/known_marketplaces.json`]: JSON.stringify({ hcc: { source: { source: 'directory', path: `${HOME}/hcc` }, installLocation: `${HOME}/hcc` } }),
+      [`${HOME}/hcc/.claude-plugin/marketplace.json`]: JSON.stringify({ name: 'hcc', plugins: [{ name: 'hcc', source: './' }] }),
+      [`${HOME}/hcc/.claude-plugin/plugin.json`]: JSON.stringify({ name: 'hcc', version: '0.2.3', description: 'dox (source)' }),
+    }
+    const r = { text: async (p: string) => files[p] ?? null, json: async (p: string) => (files[p] ? JSON.parse(files[p]!) : null), list: async (p: string) => DIRS[p] ?? [], exists: async (p: string) => p in files, watched: new Set<string>() }
+    const found = await discoverPlugins(r, io(files), env)
+    expect(found[0]).toMatchObject({ root: `${HOME}/hcc`, installPath: HCC, description: 'dox (source)' })
+    const inv = await buildInventory(io(files), SNAP, env)
+    const item = group(inv, 'plugins').children!.find(i => i.id === 'plugins/hcc')!
+    expect(item.badges).toContain('lu depuis son dossier')
+    expect(item.text).toContain(`Dossier : ${HOME}/hcc`)
+    expect(item.text).toContain(`Copie d'installation (non lue) : ${HCC}`)
+  })
+
+  test('marketplace distante : pas de known_marketplaces directory → la copie installée reste le dossier', async () => {
+    const files: Record<string, string> = {
+      ...FILES,
+      [`${HOME}/.claude/plugins/known_marketplaces.json`]: JSON.stringify({ hcc: { source: { source: 'github', repo: 'y/hcc' }, installLocation: `${HOME}/.claude/plugins/marketplaces/hcc` } }),
+    }
+    const r = { text: async (p: string) => files[p] ?? null, json: async (p: string) => (files[p] ? JSON.parse(files[p]!) : null), list: async (p: string) => DIRS[p] ?? [], exists: async (p: string) => p in files, watched: new Set<string>() }
+    const found = await discoverPlugins(r, io(files), env)
+    expect(found[0]).toMatchObject({ root: HCC })
+    expect(found[0]!.installPath).toBeUndefined()
   })
 })
 
@@ -62,6 +91,27 @@ describe('buildInventory', () => {
     expect(files[0]!.badges).toContain('observé')
     expect(files[0]!.children![0]!.title).toBe('règle projet')
     expect(files[1]!.badges).toContain('sur disque, non chargé dans cette session')
+  })
+
+  test('l’index mémoire observé (kind memory) est compté une fois, dans Mémoire, avec le badge observé', async () => {
+    const snap: Snapshot = { ...SNAP, instructionFiles: [
+      { path: `${HOME}/.claude/CLAUDE.md`, kind: 'user', content: FILES[`${HOME}/.claude/CLAUDE.md`]! },
+      { path: `${MEM}/MEMORY.md`, kind: 'memory', content: FILES[`${MEM}/MEMORY.md`]! },
+    ] }
+    const inv = await buildInventory(io(), snap, env)
+    expect(group(inv, 'claudeMd').children!.map(f => f.id)).toEqual([`claudeMd/${HOME}/.claude/CLAUDE.md`])
+    const index = group(inv, 'memory').children!.find(i => i.title === 'MEMORY.md (index)')!
+    expect(index.badges).toContain('observé')
+    expect(leaves(inv.groups.filter(g => g.id !== 'surface')).filter(i => i.source.kind === 'file' && i.source.path === `${MEM}/MEMORY.md`)).toHaveLength(1)
+  })
+
+  test('index mémoire observé hors du dossier déduit : son dossier fait foi, son contenu sert si le disque manque', async () => {
+    const other = `${HOME}/.claude/projects/-Users-y-autre/memory`
+    const snap: Snapshot = { ...SNAP, instructionFiles: [{ path: `${other}/MEMORY.md`, kind: 'memory', content: '- [Note](n.md) — x\n' }] }
+    const inv = await buildInventory(io(), snap, env)
+    const index = group(inv, 'memory').children!.find(i => i.title === 'MEMORY.md (index)')!
+    expect(index.source).toEqual({ kind: 'file', path: `${other}/MEMORY.md`, tier: 'memory' })
+    expect(index.children![0]!.disable).toMatchObject({ kind: 'remove-file', path: `${other}/n.md`, indexPath: `${other}/MEMORY.md` })
   })
 
   test('CLAUDE.md observé dont le disque a changé : badge de relecture', async () => {

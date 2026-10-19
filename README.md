@@ -49,7 +49,7 @@ Ce que le mod ne voit pas, ou voit en partie, et pourquoi. Vérifiable dans `~/.
 - **Les poids sont des mesures quand /context les donne, des estimations sinon.** Sans ventilation, un outil MCP est compté comme différé (nom seul), un outil du moteur comme décrit en entier, et chaque skill comme listé en entier alors que le moteur borne ce listing à un budget. `$.tool.list()` ne dit pas quel outil du moteur est derrière ToolSearch ; `ToolInfo.description` d'un outil MCP n'est qu'une première phrase.
 - **Un export par `~/.claude`.** Deux sessions qui tournent avec le mod écrivent le même `inventory.json` : la dernière reconstruction l'emporte ; `sessionId` et `cwd` disent laquelle.
 - **Les agents personnalisés sont hors périmètre d'écriture.** Un fichier `~/.claude/agents/*.md` ou `.claude/agents/*.md` est listé avec son poids et un pointeur, pas un bouton.
-- **Un plugin installé est une copie.** `claude plugin install` copie le dossier dans `~/.claude/plugins/cache/` : une modification de la source n'agit qu'après `claude plugin update harness@harness` et une nouvelle session. Le moteur ne pose `.claude-plugin/types/` que pour un mod chargé depuis son dossier.
+- **Un plugin d'une marketplace locale est lu depuis son dossier.** `claude plugin install` laisse une copie dans `~/.claude/plugins/cache/`, mais pour une marketplace de type `directory` le moteur lit la source (`claude plugin list` : « Read from ») : une modification agit à la session suivante ou à `/reload-plugins`, sans `claude plugin update` (qui répond « nothing to update »). Le pane montre ce dossier (badge « lu depuis son dossier »). Le moteur ne pose `.claude-plugin/types/` que pour un mod chargé par `--plugin-dir` ou hot reload.
 
 ## Installation
 
@@ -68,4 +68,4 @@ claude plugin validate .
 claude plugin test .
 ```
 
-`tsc -p .` type-checke une fois que le moteur a posé `.claude-plugin/types/` (au premier chargement du mod depuis son dossier : `--plugin-dir`, hot reload). Pour un plugin installé par copie, le dossier n'est pas posé : type-checker avec un `tsconfig.json` hors du dépôt (options du haut de `claude-code.d.ts`, que le skill `plugin-authoring` écrit sous `/tmp/claude-<uid>/bundled-skills/<version>/…/plugin-authoring/types/`) dont `include` nomme ce fichier et `hooks`, `types`, `tests` du dépôt. Design et contrats : `DESIGN.md`.
+`tsc -p .` type-checke une fois que le moteur a posé `.claude-plugin/types/` (au premier chargement du mod depuis son dossier : `--plugin-dir`, hot reload). Pour un plugin installé (même lu depuis son dossier), il n'est pas posé : type-checker avec un `tsconfig.json` hors du dépôt (options du haut de `claude-code.d.ts`, que le skill `plugin-authoring` écrit sous `/tmp/claude-<uid>/bundled-skills/<version>/…/plugin-authoring/types/`) dont `include` nomme ce fichier et `hooks`, `types`, `tests` du dépôt. Design et contrats : `DESIGN.md`.
