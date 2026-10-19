@@ -109,6 +109,7 @@ const rebuild = async ($: EngineInterface, reason: string): Promise<void> => {
         }
       }
       showStatus($, inv)
+      await exportInventory($, inv, snap)
       $.ui.log(`harness: inventaire reconstruit (${reason}) : ${inv.count} instr, ${inv.tokens} tok`, { to: 'debug' })
     } catch (err) {
       $.ui.log(`harness: inventaire en échec (${reason}) : ${String(err)}`, { to: 'debug' })
@@ -117,6 +118,38 @@ const rebuild = async ($: EngineInterface, reason: string): Promise<void> => {
     }
   })()
   return building
+}
+
+/** Projection lisible de l'inventaire, sans les textes : `~/.claude/harness/inventory.json`. Sert de vue machine et de preuve. */
+const exportInventory = async ($: EngineInterface, inv: HarnessInventory, snap: HarnessSnapshot) => {
+  const slim = (items: HarnessItem[]): unknown[] =>
+    items.map(i => ({
+      id: i.id,
+      title: i.title,
+      tokens: i.tokens,
+      vanilla: i.vanilla,
+      source: i.source,
+      ...(i.disable ? { disable: i.disable.kind } : {}),
+      ...(i.edit ? { edit: i.edit } : {}),
+      ...(i.badges?.length ? { badges: i.badges } : {}),
+      ...(i.children?.length ? { children: slim(i.children) } : {}),
+    }))
+  const out = {
+    builtAt: inv.builtAt,
+    count: inv.count,
+    tokens: inv.tokens,
+    observedClaudeMd: inv.observedClaudeMd,
+    sections: snap.sections.map(s => ({ id: s.id, scope: s.scope, chars: s.text.length })),
+    blocks: snap.blocks.map(b => ({ name: b.name, chars: b.text.length })),
+    instructionFiles: snap.instructionFiles.map(f => ({ path: f.path, kind: f.kind, ...(f.parent ? { parent: f.parent } : {}) })),
+    attachments: snap.attachments.map(a => ({ type: a.type, origin: a.origin, ...(a.event ? { event: a.event } : {}), chars: a.text.length })),
+    groups: slim(inv.groups),
+  }
+  try {
+    await $.fs.write(`${env.home}/.claude/harness/inventory.json`, `${JSON.stringify(out, null, 2)}\n`)
+  } catch (err) {
+    $.ui.log(`harness: export inventory.json en échec : ${String(err)}`, { to: 'debug' })
+  }
 }
 
 const invalidate = ($: EngineInterface, what: Invalidation[]) => {
@@ -195,7 +228,7 @@ const editViaPrompt = async ($: EngineInterface, item: HarnessItem) => {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await ensureEnv($)
-    await $.command.register({ name: 'harness', description: 'Harnais : tout ce qui entre dans le contexte, et où le couper à la source' })
+    await $.command.register({ name: 'harness', description: 'Harnais : tout ce qui entre dans le contexte, et où le couper à la source', immediate: true })
     const started = await next(e)
     await captureNow($)
     await rebuild($, 'session.start')
