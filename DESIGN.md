@@ -4,7 +4,7 @@ Plugin Claude Code (mod à hooks fonctionnels) qui rend visible 100 % de ce qui 
 
 ## Décisions
 
-1. **Observé + reconstruit.** Colonne vertébrale : capture passive de `prompt.compose`, `prompt.context`, `prompt.attachment`, `skill.prompt` (le texte réellement envoyé). Couche disque : rattache chaque élément à son fichier (`instructionFiles`, `settings.json`, `hooks.json` des plugins, dossier `memory/`, `skills/`).
+1. **Observé + reconstruit + mesuré.** Colonne vertébrale : capture passive de `prompt.compose`, `prompt.context`, `prompt.attachment`, `skill.prompt` (le texte réellement envoyé). Couche disque : rattache chaque élément à son fichier (`instructionFiles`, `settings.json`, `hooks.json` des plugins, dossier `memory/`, `skills/`). Couche mesure : la ventilation /context (`$.session.usage({ breakdown: 'summary' })`) dit quels outils MCP sont chargés ou différés, quels agents et skills sont listés et pour combien, quels fichiers d'instructions le moteur a chargés, et ce que pèse le system prompt ; ses chiffres priment sur les estimations. Les marqueurs (`# Memory`, `# Output Style:`, `# MCP Server Instructions`) sont cherchés dans les sections, les blocs du premier message et les reminders : sous le preset SDK (app de bureau) ils ne sont pas des sections.
 2. **Tout à la source.** Désactiver = supprimer du fichier d'origine. Modifier = écrire dans le fichier. Pas d'ombre, pas d'overlay.
 3. **Journal, pas de corbeille.** Chaque action est consignée dans `~/.claude/harness/journal.md` (append-only, lisible). Aucune restauration.
 4. **Vanilla** = ce qu'une session recevrait avec un `~/.claude` vide dans cette app : prose du moteur (sections à id nu), prose des plugins intégrés (id `<plugin>:<nom>` dont le plugin n'est pas installé par l'utilisateur), reminders d'origine `engine`. **Non-vanilla** = tout ce qui est traçable à la config de l'utilisateur, claude.ai inclus, le mod lui-même inclus.
@@ -14,7 +14,7 @@ Plugin Claude Code (mod à hooks fonctionnels) qui rend visible 100 % de ce qui 
 8. **Confirmation** : un clic agit ; seule la suppression d'un fichier entier demande un second clic (« Confirmer »).
 9. **Fraîcheur** : capture par tour ; `$.ui.invalidate` des événements concernés après chaque action ; veille mtime (5 s) tant que le pane est affiché. Au chargement, `$.prompt.compose()` une fois.
 10. **Unité markdown** : puce de premier niveau (avec enfants indentés) ou paragraphe hors liste. Titres = conteneurs, retirés quand vides. Frontmatter attaché au fichier. `@import` = unité `import`. Dernière unité retirée → fichier supprimé (+ ligne d'index MEMORY.md pour une note mémoire). Blocs de code / tableaux / citations = unités opaques.
-11. **Surface** : outils, commandes et agents par fournisseur, comptes et ≈tokens, lecture seule. Comptés dans la status line.
+11. **Surface** : outils et commandes par fournisseur, comptes et tokens (mesurés par /context quand la ventilation est disponible : un outil MCP chargé pèse son schéma, un différé son nom), lecture seule. Comptés dans la status line. Les agents personnalisés vont dans « Skills et commandes » (couper le plugin ; un fichier `agents/` est hors périmètre : pointeur). Ce que /context compte de system prompt au-delà des sections (la prose ajoutée par l'hôte, invisible aux hooks) est signalé dans « App », vanilla.
 12. **Vérification** : `claude plugin validate`, `tsc -p`, `claude plugin test` ; comparaison des comptes avec le contexte réel ; round-trip sur un CLAUDE.md jetable.
 
 ## Modèle de données (hooks/lib/model.ts)
@@ -23,7 +23,7 @@ Plugin Claude Code (mod à hooks fonctionnels) qui rend visible 100 % de ce qui 
 type Source =
   | { kind: 'engine' }
   | { kind: 'builtin'; plugin: string }
-  | { kind: 'file'; path: string; tier: 'managed' | 'user' | 'project' | 'local' | 'memory' | 'rule' | 'skill' }
+  | { kind: 'file'; path: string; tier: 'managed' | 'user' | 'project' | 'local' | 'memory' | 'rule' | 'skill' | 'agent' }
   | { kind: 'settings'; path: string; keyPath: string[] }
   | { kind: 'plugin'; name: string; root?: string }
   | { kind: 'mcp'; server: string }
@@ -114,5 +114,5 @@ export function toolProvider(name: string): { kind: 'engine' | 'mcp'; server?: s
 - `session.start` : enregistre `/harness`, lit settings + disque, appelle `$.prompt.compose()`, écrit le snapshot, met à jour la status line.
 - `prompt.compose` / `prompt.context` / `prompt.attachment` / `skill.prompt` : `next(e)` intact, copie du résultat dans le snapshot.
 - `turn.start` : vide la liste des reminders du tour.
-- `ui.render` Pane `harness` : construit l'arbre depuis le snapshot + lectures disque mises en cache dans `$.state`.
+- `ui.render` Pane `harness` : construit l'arbre depuis le snapshot + lectures disque + ventilation /context, mis en cache dans `$.state`.
 - Actions : écriture fichier → journal → `$.ui.invalidate('prompt.context' | 'prompt.section' | 'prompt.compose')` → relecture → toast.

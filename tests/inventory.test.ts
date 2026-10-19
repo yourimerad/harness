@@ -2,7 +2,8 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { HarnessItem as Item, HarnessSnapshot as Snapshot } from '../types'
 import { buildInventory, discoverPlugins } from '../hooks/lib/inventory'
-import { CWD, DIRS, FILES, HCC, HOME, MEM, SNAP, env, io } from './fixtures'
+import { estimateTokens } from '../hooks/lib/tokens'
+import { BREAKDOWN, CWD, DIRS, FILES, HCC, HOME, MEM, SNAP, env, io } from './fixtures'
 
 const leaves = (items: Item[]): Item[] => items.flatMap(i => (i.children?.length ? leaves(i.children) : [i]))
 const group = (inv: Awaited<ReturnType<typeof buildInventory>>, id: string) => inv.groups.find(g => g.id === id)!
@@ -228,5 +229,84 @@ describe('buildInventory : marqueurs hors sections (preset SDK)', () => {
     const mcp = group(inv, 'mcp').children!
     expect(mcp.filter(i => i.title.includes('gmail'))).toHaveLength(1)
     expect(group(inv, 'surface').children!.some(i => i.id === 'surface/tools/mcp:plugin_small-business_gmail')).toBe(true)
+  })
+})
+
+// La ventilation /context (`$.session.usage({ breakdown: 'summary' })`) : les mesures du moteur priment sur les estimations.
+describe('buildInventory : mesure /context', () => {
+  const measured = () => buildInventory(io(FILES, DIRS, async () => BREAKDOWN), SNAP, env)
+
+  test('outils MCP : chargés comptés au schéma, différés au nom, nom /mcp affiché ; outils du moteur à la catégorie', async () => {
+    const inv = await measured()
+    const surface = group(inv, 'surface').children!
+    const vercel = surface.find(i => i.id === 'surface/tools/mcp:vercel')!
+    expect(vercel.title).toBe('outils MCP Vercel (vercel) : 2')
+    expect(vercel.tokens).toBe(300 + estimateTokens('mcp__vercel__get_project'))
+    expect(vercel.badges).toEqual(['1 chargés en entier', '1 différés (noms seuls)', 'mesuré par /context'])
+    // mesuré par /context mais absent de tool.list (connecté après la liste) : compté quand même
+    const gmail = surface.find(i => i.id === 'surface/tools/mcp:claude_ai_Gmail')!
+    expect(gmail.tokens).toBe(250)
+    expect(group(inv, 'mcp').children!.some(i => i.id === 'mcp/claude_ai_Gmail')).toBe(true)
+    expect(surface.find(i => i.id === 'surface/tools/engine')!.tokens).toBe(1500)
+  })
+
+  test('skills : le listing mesuré fait foi, un skill hors budget pèse 0', async () => {
+    const inv = await measured()
+    const skills = group(inv, 'skills').children!
+    expect(skills.find(s => s.title === '/grilling')!.tokens).toBe(50)
+    expect(skills.find(s => s.title === '/hcc:dox-pass')!.tokens).toBe(40)
+    const pdf = skills.find(s => s.title === '/anthropic-skills:pdf')!
+    expect(pdf.tokens).toBe(0)
+    expect(pdf.badges).toContain('hors du listing envoyé au modèle (budget) : 0 tok')
+  })
+
+  test('agents : plugin local → couper le plugin ; claude.ai → pointeur ; perso → fichier hors périmètre', async () => {
+    const inv = await measured()
+    const skills = group(inv, 'skills').children!
+    const dox = skills.find(s => s.id === 'skills/agent/hcc:dox-updater')!
+    expect(dox.disable).toEqual({ kind: 'disable-plugin', path: `${HOME}/.claude/settings.json`, plugin: 'hcc@hcc' })
+    expect(dox.tokens).toBe(40)
+    const seo = skills.find(s => s.id === 'skills/agent/seo:auditor')!
+    expect(seo.source).toEqual({ kind: 'claude-ai', what: 'plugin seo' })
+    expect(seo.disable).toBeUndefined()
+    const reviewer = skills.find(s => s.id === 'skills/agent/reviewer')!
+    expect(reviewer.source).toEqual({ kind: 'file', path: `${HOME}/.claude/agents/reviewer.md`, tier: 'agent' })
+    expect(reviewer.disable).toBeUndefined()
+    expect(reviewer.hint).toContain('hors du périmètre')
+    expect(inv.count).toBe(leaves(inv.groups.filter(g => g.id !== 'surface')).filter(i => !i.vanilla).length)
+  })
+
+  test('CLAUDE.md reconstruit : /context dit ce qui est chargé, le reste est sur disque ; un fichier hors chaîne est ajouté', async () => {
+    const files = { ...FILES, [`${HOME}/.claude/rules/extra.md`]: '- règle extra\n', [`${CWD}/CLAUDE.md`]: '- projet\n' }
+    const inv = await buildInventory(io(files, DIRS, async () => BREAKDOWN), SNAP, env)
+    const claude = group(inv, 'claudeMd').children!
+    const byPath = (p: string) => claude.find(f => f.source.kind === 'file' && f.source.path === p)!
+    expect(byPath(`${HOME}/.claude/CLAUDE.md`).badges).toContain('chargé (mesuré par /context)')
+    expect(byPath(`${CWD}/CLAUDE.md`).badges).toContain('sur disque, non chargé dans cette session')
+    expect(byPath(`${HOME}/.claude/rules/extra.md`).badges).toContain('chargé hors de la chaîne connue')
+    expect(claude.some(f => f.source.kind === 'file' && f.source.path.endsWith('/MEMORY.md'))).toBe(false)
+  })
+
+  test('system prompt : la part mesurée au-delà des sections est signalée dans le groupe App, vanilla', async () => {
+    const inv = await measured()
+    const rest = group(inv, 'app').children!.find(i => i.id === 'app/system-prompt-rest')!
+    expect(rest.vanilla).toBe(true)
+    const sections = SNAP.sections.reduce((n, s) => n + estimateTokens(s.text), 0)
+    expect(rest.tokens).toBe(9000 - sections)
+    expect(rest.badges).toContain('non observable par un hook')
+  })
+
+  test('mesure proche des sections : pas d’item App (l’écart d’estimateur ne compte pas)', async () => {
+    const sections = SNAP.sections.reduce((n, s) => n + estimateTokens(s.text), 0)
+    const close = { ...BREAKDOWN, categories: [{ name: 'System prompt', tokens: Math.round(sections * 1.2), kind: 'used' as const }] }
+    const inv = await buildInventory(io(FILES, DIRS, async () => close), SNAP, env)
+    expect(group(inv, 'app').children!.some(i => i.id === 'app/system-prompt-rest')).toBe(false)
+  })
+
+  test('sans mesure, rien ne change : estimations comme avant, ni agents ni item App', async () => {
+    const inv = await buildInventory(io(), SNAP, env)
+    expect(group(inv, 'app').children!.some(i => i.id === 'app/system-prompt-rest')).toBe(false)
+    expect(group(inv, 'skills').children!.some(i => i.id.startsWith('skills/agent/'))).toBe(false)
+    expect(group(inv, 'surface').children!.find(i => i.id === 'surface/tools/mcp:vercel')!.badges).toEqual(['différés (noms seuls)'])
   })
 })

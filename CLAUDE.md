@@ -7,7 +7,7 @@ Mod Claude Code : pane « Harnais » qui liste tout ce qui entre dans le context
 - `.claude-plugin/plugin.json` : manifeste ; `types` pointe le contrat d'état.
 - `hooks/hooks.json` → `hooks/register.tsx` : le seul fichier qui touche `$` (capture passive, commande `/harness`, veille mtime, câblage des actions) ; il construit des objets `io` pour les modules.
 - `hooks/pane.tsx` : rendu pur du pane à partir du modèle et de la table d'éléments résolue.
-- `hooks/lib/inventory.ts` : construit l'arbre d'items (snapshot + disque via `InventoryIo`).
+- `hooks/lib/inventory.ts` : construit l'arbre d'items (snapshot + disque + ventilation /context via `InventoryIo`) ; les marqueurs sont cherchés dans sections, blocs et reminders.
 - `hooks/lib/actions.ts` : actions à la source (via `ActionIo`), journal, périmètre d'écriture.
 - `hooks/lib/` purs testés : `markdown.ts` (unités), `settings.ts` (JSON), `journal.ts`, `tokens.ts`, `classify.ts`, `model.ts` (renomme les types du contrat).
 - `types/index.d.ts` : contrat `$.state` (`harness.snapshot`, `harness.inventory`, `harness.ui`) et types partagés.

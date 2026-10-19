@@ -27,7 +27,7 @@ export type HarnessSnapshot = {
 export type HarnessSource =
   | { kind: 'engine' }
   | { kind: 'builtin'; plugin: string }
-  | { kind: 'file'; path: string; tier: 'managed' | 'user' | 'project' | 'local' | 'memory' | 'rule' | 'skill' }
+  | { kind: 'file'; path: string; tier: 'managed' | 'user' | 'project' | 'local' | 'memory' | 'rule' | 'skill' | 'agent' }
   | { kind: 'settings'; path: string; keyPath: Array<string | number> }
   | { kind: 'plugin'; name: string; root?: string }
   | { kind: 'mcp'; server: string }

@@ -9,7 +9,7 @@ import type {
 } from '../../types'
 import { memoryDirFor, sectionSource, toolProvider } from './classify'
 import { parseUnits } from './markdown'
-import { estimateTokens } from './tokens'
+import { estimateTokens, formatTokens } from './tokens'
 
 export type Env = { home: string; cwd: string; root: string; now: string }
 
@@ -22,6 +22,18 @@ export type InventoryIo = {
   ancestors: (names: string[]) => Promise<readonly { dir: string; name: string; parts: readonly { path: string; content: string }[] }[]>
   commands: () => Promise<readonly { name: string; description: string; source: 'builtin' | 'plugin' | 'user' | 'mcp'; plugin?: string }[]>
   tools: () => Promise<readonly { name: string; description: string; mcp: boolean }[]>
+  /** La ventilation /context (`$.session.usage({ breakdown: 'summary' })`), ou null quand le moteur ne la donne pas. */
+  usage: () => Promise<ContextBreakdown | null>
+}
+
+/** Ce que l'inventaire lit de la ventilation /context : les mesures du moteur, jamais recalculées. */
+export type ContextBreakdown = {
+  categories: readonly { name: string; tokens: number; kind: 'used' | 'free' | 'buffer' | 'deferred' }[]
+  memoryFiles: readonly { path: string; type: string; tokens: number }[]
+  mcpTools: readonly { name: string; serverName: string; tokens: number; isLoaded: boolean }[]
+  agents: readonly { agentType: string; source: string; tokens: number }[]
+  skills?: { totalSkills: number; includedSkills: number; tokens: number; skillFrontmatter: readonly { name: string; source: string; pluginName?: string; tokens: number }[] }
+  slashCommands?: { totalCommands: number; includedCommands: number; tokens: number }
 }
 
 export type PluginInfo = {
@@ -282,6 +294,16 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
   const plugins = await discoverPlugins(r, io, env)
   const userPlugins = new Set(plugins.map(p => p.name))
   const userSettingsPath = `${env.home}/.claude/settings.json`
+  // La mesure du moteur : ce que /context compte vraiment (outils MCP chargés ou différés, agents, listing des skills,
+  // fichiers d'instructions chargés). Absente, l'inventaire estime comme avant.
+  let bd: ContextBreakdown | null = null
+  try {
+    bd = await io.usage()
+  } catch {
+    bd = null
+  }
+  const category = (re: RegExp) => bd?.categories.find(c => re.test(c.name)) ?? null
+  const MEASURED = 'mesuré par /context'
 
   // --- sections du system prompt, blocs du premier message, reminders : les mêmes marqueurs partout.
   // Sous le preset SDK (app de bureau), le cadre mémoire, le style de sortie et les instructions MCP ne sont
@@ -356,13 +378,16 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
     claudeMd.push(fileItem('claudeMd', f.path, text, tier, env.home, { badges }))
     seen.add(f.path)
   }
-  const diskBadge = observedClaudeMd ? 'sur disque, non chargé dans cette session' : 'reconstruit'
+  // Sans `prompt.context` (mod chargé en cours de session), /context dit quand même quels fichiers le moteur a chargés.
+  const loadedFiles = new Set((bd?.memoryFiles ?? []).map(f => f.path))
+  const diskBadge = (path: string) =>
+    observedClaudeMd || loadedFiles.size === 0 ? (observedClaudeMd ? 'sur disque, non chargé dans cette session' : 'reconstruit') : loadedFiles.has(path) ? `chargé (${MEASURED})` : 'sur disque, non chargé dans cette session'
   const pushDisk = async (path: string, tier: Extract<Source, { kind: 'file' }>['tier'], badge: string) => {
     if (seen.has(path)) return
     const text = await r.text(path)
     if (text === null) return
     seen.add(path)
-    claudeMd.push(fileItem('claudeMd', path, text, tier, env.home, { badges: [diskBadge, badge] }))
+    claudeMd.push(fileItem('claudeMd', path, text, tier, env.home, { badges: [diskBadge(path), badge] }))
   }
   await pushDisk(`${env.home}/.claude/CLAUDE.md`, 'user', 'global')
   for (const name of await r.list(`${env.home}/.claude/rules`)) if (name.endsWith('.md')) await pushDisk(`${env.home}/.claude/rules/${name}`, 'rule', 'règle globale')
@@ -382,6 +407,11 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
     await pushDisk(`${dir}/CLAUDE.local.md`, 'local', 'dossier de travail')
     await pushDisk(`${dir}/.claude/CLAUDE.md`, 'project', '.claude/')
     for (const name of await r.list(`${dir}/.claude/rules`)) if (name.endsWith('.md')) await pushDisk(`${dir}/.claude/rules/${name}`, 'rule', 'règle projet')
+  }
+  for (const f of bd?.memoryFiles ?? []) {
+    if (f.type === 'AutoMem' || f.path.endsWith('/MEMORY.md')) continue
+    const tier = ({ User: 'user', Project: 'project', Local: 'local', Managed: 'managed' } as const)[f.type] ?? 'project'
+    await pushDisk(f.path, tier, 'chargé hors de la chaîne connue')
   }
 
   // --- mémoire
@@ -509,6 +539,15 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
     commands = []
   }
   const loaded = new Map((snap?.skillPrompts ?? []).map(s => [s.skill, s]))
+  // Le listing envoyé au modèle est borné par un budget : /context dit quels skills y figurent et pour combien.
+  const listed = bd?.skills ? bd.skills.skillFrontmatter : null
+  const listing = (name: string, fallback: number): { tokens: number; badges: string[] } => {
+    if (!listed) return { tokens: fallback, badges: [] }
+    const bare = name.slice(name.lastIndexOf(':') + 1)
+    const exact = listed.filter(s => s.name === name)
+    const hits = exact.length ? exact : listed.filter(s => s.name === bare)
+    return hits.length === 1 ? { tokens: hits[0]!.tokens, badges: [`listé (${MEASURED})`] } : { tokens: 0, badges: ['hors du listing envoyé au modèle (budget) : 0 tok'] }
+  }
   for (const c of commands) {
     if (c.source === 'builtin') continue
     const loadedPrompt = loaded.get(c.name)
@@ -526,11 +565,11 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
         if (text !== null) { found = { ...cand, text }; break }
       }
       skills.push(leaf({
-        ...base, id: `skills/${c.name}`, text: `${c.description}\n\n---\n\n${found?.text ?? '(corps introuvable sur disque)'}`, tokens: estimateTokens(c.description),
+        ...base, id: `skills/${c.name}`, text: `${c.description}\n\n---\n\n${found?.text ?? '(corps introuvable sur disque)'}`, tokens: listing(c.name, estimateTokens(c.description)).tokens,
         source: found ? { kind: 'file', path: found.path, tier: 'skill' } : { kind: 'unknown' },
         disable: found ? (found.dir ? { kind: 'disable-skill', path: found.dir } : { kind: 'remove-file', path: found.path }) : undefined,
         edit: found ? 'prompt' : undefined,
-        badges: ['skill perso', `corps ≈ ${estimateTokens(found?.text ?? '')} tok à l'usage`, ...(loadedPrompt ? ['chargé ce tour ou avant'] : [])],
+        badges: ['skill perso', ...listing(c.name, 0).badges, `corps ≈ ${estimateTokens(found?.text ?? '')} tok à l'usage`, ...(loadedPrompt ? ['chargé ce tour ou avant'] : [])],
       }))
       continue
     }
@@ -553,17 +592,34 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
       }
       const local = p.root !== undefined
       skills.push(leaf({
-        ...base, id: `skills/${c.name}`, text: `${c.description}${loadedPrompt ? `\n\n---\n\n${loadedPrompt.text}` : ''}`, tokens: estimateTokens(c.description),
+        ...base, id: `skills/${c.name}`, text: `${c.description}${loadedPrompt ? `\n\n---\n\n${loadedPrompt.text}` : ''}`, tokens: listing(c.name, estimateTokens(c.description)).tokens,
         source: local ? { kind: 'plugin', name: p.name, root: p.root } : { kind: 'claude-ai', what: `plugin ${p.name}` },
         disable: pluginDisable(p, env),
         hint: local ? `Skill du plugin ${p.name} : désactiver = couper le plugin entier ; modifier = éditer ${short(p.root ?? '', env.home)}/skills/.` : `Skill servi par claude.ai (plugin ${p.name}) : à couper dans les réglages claude.ai.`,
-        badges: [`plugin ${p.name}`, local ? 'local' : 'claude.ai', ...(loadedPrompt ? ['chargé'] : [])],
+        badges: [`plugin ${p.name}`, local ? 'local' : 'claude.ai', ...listing(c.name, 0).badges, ...(loadedPrompt ? ['chargé'] : [])],
       }))
       continue
     }
     skills.push(leaf({
-      ...base, id: `skills/${c.name}`, text: c.description, tokens: estimateTokens(c.description), source: { kind: 'mcp', server: c.plugin ?? '?' },
-      hint: 'Prompt exposé par un serveur MCP : à couper avec le serveur.', badges: ['mcp'],
+      ...base, id: `skills/${c.name}`, text: c.description, tokens: listing(c.name, estimateTokens(c.description)).tokens, source: { kind: 'mcp', server: c.plugin ?? '?' },
+      hint: 'Prompt exposé par un serveur MCP : à couper avec le serveur.', badges: ['mcp', ...listing(c.name, 0).badges],
+    }))
+  }
+  // agents personnalisés : leur description vit dans l'outil Agent, /context les mesure ; le mod n'écrit pas dans agents/
+  for (const a of bd?.agents ?? []) {
+    const prefix = a.agentType.includes(':') ? a.agentType.slice(0, a.agentType.indexOf(':')) : a.agentType
+    const p = a.source === 'plugin' ? plugins.find(x => x.name === prefix) : undefined
+    const isPlugin = a.source === 'plugin'
+    const file = `${a.source === 'projectSettings' ? env.root : env.home}/.claude/agents/${a.agentType}.md`
+    skills.push(leaf({
+      id: `skills/agent/${a.agentType}`, group: 'skills', title: `agent ${a.agentType}`, tokens: a.tokens, vanilla: false,
+      text: `Type d'agent décrit au modèle dans l'outil Agent (source ${a.source}).`,
+      source: isPlugin ? (p?.root ? { kind: 'plugin', name: p.name, root: p.root } : { kind: 'claude-ai', what: `plugin ${prefix}` }) : { kind: 'file', path: file, tier: 'agent' },
+      disable: isPlugin && p ? pluginDisable(p, env) : undefined,
+      hint: isPlugin
+        ? p?.root ? `Agent du plugin ${p.name} : désactiver = couper le plugin entier ; modifier = éditer ${short(p.root, env.home)}/agents/.` : `Agent servi par claude.ai (plugin ${prefix}) : à couper dans les réglages claude.ai.`
+        : `Agent personnalisé : hors du périmètre d'écriture du mod, retirer ${short(file, env.home)} à la main.`,
+      badges: ['agent', a.source, MEASURED],
     }))
   }
   // plugins intégrés (app) détectés par leurs commandes, hors plugins de l'utilisateur
@@ -613,22 +669,40 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
   } catch {
     tools = []
   }
-  const byProvider = new Map<string, { names: string[]; tokens: number; vanilla: boolean }>()
-  for (const t of tools) {
-    const prov = toolProvider(t.name)
+  // /context mesure chaque outil MCP et dit s'il est chargé (schéma en contexte) ou différé (nom seul derrière ToolSearch) ;
+  // les outils du moteur sont comptés ensemble (catégorie « System tools »). Sans mesure : un outil MCP est différé, un
+  // outil du moteur décrit en entier.
+  const measured = new Map((bd?.mcpTools ?? []).map(t => [t.name, t]))
+  type Provider = { names: string[]; tokens: number; vanilla: boolean; loaded: number; label?: string }
+  const byProvider = new Map<string, Provider>()
+  const add = (name: string, description: string) => {
+    const prov = toolProvider(name)
     const key = prov.kind === 'mcp' ? `mcp:${prov.server ?? '?'}` : 'engine'
-    const cur: { names: string[]; tokens: number; vanilla: boolean } = byProvider.get(key) ?? { names: [], tokens: 0, vanilla: prov.kind !== 'mcp' }
-    cur.names.push(t.name)
-    // un outil MCP est différé : seul son nom est en contexte ; un outil du moteur y est décrit en entier
-    cur.tokens += prov.kind === 'mcp' ? estimateTokens(t.name) : estimateTokens(`${t.name} ${t.description}`)
+    const cur: Provider = byProvider.get(key) ?? { names: [], tokens: 0, vanilla: prov.kind !== 'mcp', loaded: 0 }
+    cur.names.push(name)
+    const m = measured.get(name)
+    if (m) cur.label = m.serverName
+    if (prov.kind !== 'mcp') cur.tokens += estimateTokens(`${name} ${description}`)
+    else if (m?.isLoaded) {
+      cur.tokens += m.tokens
+      cur.loaded++
+    } else cur.tokens += estimateTokens(name)
     byProvider.set(key, cur)
   }
+  for (const t of tools) add(t.name, t.description)
+  for (const [name] of measured) if (!tools.some(t => t.name === name)) add(name, '')
+  const systemTools = category(/^system tools$/i)
+  const engineTools = byProvider.get('engine')
+  if (engineTools && systemTools) engineTools.tokens = systemTools.tokens
   for (const [key, v] of [...byProvider.entries()].sort((a, b) => Number(a[1].vanilla) - Number(b[1].vanilla) || b[1].tokens - a[1].tokens)) {
     const server = key.startsWith('mcp:') ? key.slice(4) : null
+    const shown = v.label && v.label !== server ? `${v.label} (${server})` : server
     surface.push(leaf({
-      id: `surface/tools/${key}`, group: 'surface', title: `${server ? `outils MCP ${server}` : 'outils du moteur'} : ${v.names.length}`, text: v.names.join('\n'), tokens: v.tokens,
+      id: `surface/tools/${key}`, group: 'surface', title: `${server ? `outils MCP ${shown}` : 'outils du moteur'} : ${v.names.length}`, text: v.names.join('\n'), tokens: v.tokens,
       vanilla: v.vanilla, source: server ? { kind: 'mcp', server } : { kind: 'engine' }, hint: server ? mcpHint(server) : undefined,
-      badges: [server ? 'différés (noms seuls)' : 'décrits en entier'],
+      badges: server
+        ? measured.size ? [`${v.loaded} chargés en entier`, `${v.names.length - v.loaded} différés (noms seuls)`, MEASURED] : ['différés (noms seuls)']
+        : systemTools ? ['décrits en entier', MEASURED] : ['décrits en entier'],
     }))
     if (server && !mcp.some(i => i.source.kind === 'mcp' && mcpKey(i.source.server) === mcpKey(server))) {
       mcp.push(leaf({ id: `mcp/${server}`, group: 'mcp', title: server, text: `(sans instructions serveur) ${v.names.length} outils`, tokens: 0, vanilla: false, source: { kind: 'mcp', server }, hint: mcpHint(server), badges: ['sans instructions'] }))
@@ -639,6 +713,21 @@ export const buildInventory = async (io: InventoryIo, snap: Snapshot | null, env
   for (const [source, names] of bySource) {
     const text = names.map(n => `/${n}`).join('\n')
     surface.push(leaf({ id: `surface/commands/${source}`, group: 'surface', title: `commandes ${source} : ${names.length}`, text, tokens: source === 'builtin' ? 0 : estimateTokens(text), vanilla: source === 'builtin', source: { kind: source === 'builtin' ? 'engine' : 'unknown' } }))
+  }
+
+  // Ce que le moteur compte comme system prompt au-delà des sections : la prose ajoutée par l'hôte (SDK
+  // `systemPrompt.append`, l'app de bureau), qu'aucun hook n'observe. Signalée quand la mesure dépasse nettement
+  // l'estimation des sections (les deux estiment : une marge absorbe l'écart d'estimateur).
+  const systemPrompt = category(/^system prompt$/i)
+  const sectionsTokens = (snap?.sections ?? []).reduce((n, s) => n + estimateTokens(s.text), 0)
+  if (systemPrompt && sectionsTokens > 0 && systemPrompt.tokens > sectionsTokens * 1.25 + 200) {
+    const rest = systemPrompt.tokens - sectionsTokens
+    app.push(leaf({
+      id: 'app/system-prompt-rest', group: 'app', title: `prose du system prompt hors sections (${formatTokens(rest)} tok)`, tokens: rest, vanilla: true,
+      source: { kind: 'builtin', plugin: 'hôte' },
+      text: `/context compte ${formatTokens(systemPrompt.tokens)} tok de system prompt ; les ${snap?.sections.length ?? 0} sections listées par prompt.compose en font ${formatTokens(sectionsTokens)}. Le reste est ajouté par l'hôte (SDK : systemPrompt.append — l'app de bureau) après les sections : aucun hook ne le voit, il n'est ni listé ni coupable ici.`,
+      badges: [MEASURED, 'non observable par un hook'],
+    }))
   }
 
   const groups: Item[] = [

@@ -34,7 +34,7 @@ export const DIRS: Record<string, string[]> = {
   [`${HCC}/agents`]: ['dox-updater.md'],
 }
 
-export const io = (files = FILES, dirs = DIRS): InventoryIo => ({
+export const io = (files = FILES, dirs = DIRS, usage: InventoryIo['usage'] = async () => null): InventoryIo => ({
   readText: async path => files[path] ?? null,
   list: async path => dirs[path] ?? [],
   exists: async path => path in files || path in dirs,
@@ -52,7 +52,41 @@ export const io = (files = FILES, dirs = DIRS): InventoryIo => ({
     { name: 'mcp__vercel__list_projects', description: 'Liste', mcp: true },
     { name: 'mcp__vercel__get_project', description: 'Lit', mcp: true },
   ],
+  usage,
 })
+
+/** Une ventilation /context comme `$.session.usage({ breakdown: 'summary' })` la rend. */
+export const BREAKDOWN: NonNullable<Awaited<ReturnType<InventoryIo['usage']>>> = {
+  categories: [
+    { name: 'System prompt', tokens: 9000, kind: 'used' },
+    { name: 'System tools', tokens: 1500, kind: 'used' },
+    { name: 'MCP tools', tokens: 700, kind: 'used' },
+    { name: 'Free space', tokens: 100000, kind: 'free' },
+  ],
+  memoryFiles: [
+    { path: `${HOME}/.claude/CLAUDE.md`, type: 'User', tokens: 60 },
+    { path: `${HOME}/.claude/rules/extra.md`, type: 'User', tokens: 10 },
+    { path: `${MEM}/MEMORY.md`, type: 'AutoMem', tokens: 20 },
+  ],
+  mcpTools: [
+    { name: 'mcp__vercel__list_projects', serverName: 'Vercel', tokens: 300, isLoaded: true },
+    { name: 'mcp__vercel__get_project', serverName: 'Vercel', tokens: 400, isLoaded: false },
+    { name: 'mcp__claude_ai_Gmail__search', serverName: 'claude.ai Gmail', tokens: 250, isLoaded: true },
+  ],
+  agents: [
+    { agentType: 'hcc:dox-updater', source: 'plugin', tokens: 40 },
+    { agentType: 'seo:auditor', source: 'plugin', tokens: 30 },
+    { agentType: 'reviewer', source: 'userSettings', tokens: 25 },
+  ],
+  skills: {
+    totalSkills: 4, includedSkills: 2, tokens: 90,
+    skillFrontmatter: [
+      { name: 'grilling', source: 'userSettings', tokens: 50 },
+      { name: 'hcc:dox-pass', source: 'plugin', pluginName: 'hcc', tokens: 40 },
+    ],
+  },
+  slashCommands: { totalCommands: 5, includedCommands: 5, tokens: 30 },
+}
 
 export const SNAP: Snapshot = {
   at: '', outputStyle: 'Concise', blocks: [{ name: 'currentDate', text: '2026-10-19' }], instructionFiles: [], attachments: [], skillPrompts: [],

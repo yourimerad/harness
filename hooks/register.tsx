@@ -68,6 +68,13 @@ const inventoryIo = ($: EngineInterface): InventoryIo => ({
   ancestors: names => $.fs.ancestors({ names }),
   commands: () => $.command.list(),
   tools: () => $.tool.list(),
+  usage: async () => {
+    try {
+      return (await $.session.usage({ breakdown: 'summary' })).context.breakdown ?? null
+    } catch {
+      return null
+    }
+  },
 })
 
 /** Les entrées-sorties des actions, autour de `$`. */
